@@ -17,7 +17,8 @@
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "package": "com.benedict2011.carwashmonitor"
     },
     "web": {
       "output": "static",
@@ -41,8 +42,9 @@
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "25d97fda-cbd6-4502-aac9-1f386b70be36be36"
+        "projectId": "5df37850-95b6-4bc3-ab25-0b433c95b042"
       }
-    }
+    },
+    "owner": "benedict2011"
   }
 }
