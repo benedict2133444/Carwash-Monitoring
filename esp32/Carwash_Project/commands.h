@@ -1,0 +1,9 @@
+#ifndef COMMANDS_H
+#define COMMANDS_H
+
+#define CMD_WATER_TEST   "WATER_TEST"
+#define CMD_SOAP_TEST    "SOAP_TEST"
+#define CMD_BLOWER_TEST  "BLOWER_TEST"
+#define CMD_FAUCET_TEST  "FAUCET_TEST"
+
+#endif

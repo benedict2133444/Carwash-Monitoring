@@ -1,0 +1,21 @@
+#ifndef COMMANDS_H
+#define COMMANDS_H
+
+enum CommandID
+{
+    CMD_NONE = 0,
+
+    CMD_WATER_START,
+    CMD_WATER_STOP,
+
+    CMD_SOAP_START,
+    CMD_SOAP_STOP,
+
+    CMD_BLOWER_START,
+    CMD_BLOWER_STOP,
+
+    CMD_FAUCET_START,
+    CMD_FAUCET_STOP,
+};
+
+#endif
