@@ -1,6 +1,6 @@
 #include "carwash_logic.h"
 #include "ui.h"
-#include "espnow.h"
+extern void sendCommand(const char *cmd);
 #include "supabase_client.h"
 
 #include <Arduino.h>
@@ -10,7 +10,7 @@
 // ======================================================
 // CUSTOMER SELECTIONS
 //
-// These variables are used by espnow.cpp:
+// These variables are used by uart_comm.cpp:
 //
 // Water physical button  -> waterSelected
 // Soap physical button   -> soapSelected

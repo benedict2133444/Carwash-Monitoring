@@ -1,94 +1,316 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   View,
+  useWindowDimensions,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
+import { supabase } from '@/lib/supabase';
 
 const PURPLE = '#4B00FF';
 const BLUE = '#6AA3DD';
-const CARD = '#E5E5E5';
+const CARD = '#FFFFFF';
 const RED = '#FF3030';
 const GREEN = '#00A844';
 const ORANGE = '#FF9D00';
 
+type Transaction = {
+  id: number;
+  customer_name: string;
+  service: string;
+  payment: number;
+  duration: number;
+  status: string;
+  created_at: string;
+};
+
 export default function AnalyticsScreen() {
   const router = useRouter();
+  const { width } = useWindowDimensions();
+
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [serverConnected, setServerConnected] = useState(false);
   const [filter, setFilter] = useState('Today');
+
+  const isCompact = width < 850;
+
+  useEffect(() => {
+    const fetchTransactions = async () => {
+      const { data, error } = await supabase
+        .from('transactions')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error('Analytics transactions fetch error:', error);
+        setServerConnected(false);
+        return;
+      }
+
+      setTransactions(data ?? []);
+      setServerConnected(true);
+    };
+
+    fetchTransactions();
+    const interval = setInterval(fetchTransactions, 5000);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  const filteredTransactions = useMemo(() => {
+    const now = new Date();
+
+    return transactions.filter((transaction) => {
+      const date = new Date(transaction.created_at);
+
+      if (filter === 'Today') {
+        return date.toDateString() === now.toDateString();
+      }
+
+      if (filter === 'This Week') {
+        const start = new Date(now);
+        const day = start.getDay();
+        const diff = day === 0 ? 6 : day - 1;
+        start.setDate(now.getDate() - diff);
+        start.setHours(0, 0, 0, 0);
+
+        return date >= start;
+      }
+
+      if (filter === 'This Month') {
+        return (
+          date.getFullYear() === now.getFullYear() &&
+          date.getMonth() === now.getMonth()
+        );
+      }
+
+      return true;
+    });
+  }, [transactions, filter]);
+
+  const completedTransactions = filteredTransactions.filter(
+    (transaction) =>
+      transaction.status?.toUpperCase() === 'COMPLETED'
+  );
+
+  const revenue = completedTransactions.reduce(
+    (sum, transaction) =>
+      sum + Number(transaction.payment || 0),
+    0
+  );
+
+  const sessions = filteredTransactions.length;
+
+  const averagePayment =
+    sessions > 0 ? revenue / sessions : 0;
+
+  const mostUsedService = useMemo(() => {
+    if (!filteredTransactions.length) return 'NO DATA';
+
+    const counts: Record<string, number> = {};
+
+    filteredTransactions.forEach((transaction) => {
+      const service = transaction.service || 'Unknown';
+      counts[service] = (counts[service] || 0) + 1;
+    });
+
+    return Object.entries(counts).sort(
+      (a, b) => b[1] - a[1]
+    )[0][0];
+  }, [filteredTransactions]);
+
+  const serviceCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+
+    filteredTransactions.forEach((transaction) => {
+      const service = transaction.service || 'Unknown';
+      counts[service] = (counts[service] || 0) + 1;
+    });
+
+    return counts;
+  }, [filteredTransactions]);
+
+  const serviceEntries = Object.entries(serviceCounts);
+
+  const chartData = useMemo(() => {
+    const now = new Date();
+    const values = Array.from({ length: 7 }, (_, index) => {
+      const date = new Date(now);
+      date.setDate(now.getDate() - (6 - index));
+      date.setHours(0, 0, 0, 0);
+
+      const next = new Date(date);
+      next.setDate(date.getDate() + 1);
+
+      const dayTransactions = filteredTransactions.filter(
+        (transaction) => {
+          const created = new Date(transaction.created_at);
+          return created >= date && created < next;
+        }
+      );
+
+      return {
+        label: date.toLocaleDateString(undefined, {
+          weekday: 'short',
+        }),
+        revenue: dayTransactions
+          .filter(
+            (transaction) =>
+              transaction.status?.toUpperCase() ===
+              'COMPLETED'
+          )
+          .reduce(
+            (sum, transaction) =>
+              sum + Number(transaction.payment || 0),
+            0
+          ),
+        sessions: dayTransactions.length,
+      };
+    });
+
+    return values;
+  }, [filteredTransactions]);
+
+  const maxRevenue = Math.max(
+    ...chartData.map((item) => item.revenue),
+    1
+  );
+
+  const maxSessions = Math.max(
+    ...chartData.map((item) => item.sessions),
+    1
+  );
+
+  const nowText = new Date().toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
+
+  const timeText = new Date().toLocaleTimeString(undefined, {
+    hour: 'numeric',
+    minute: '2-digit',
+  });
 
   return (
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.container}>
-
-        {/* SCROLLABLE CONTENT */}
         <ScrollView
           showsVerticalScrollIndicator={false}
           contentContainerStyle={styles.scrollContent}
         >
-          
-        {/* HEADER */}
-        <View style={styles.header}>
-          <View>
-            <Text style={styles.title}>ANALYTICS</Text>
-            <Text style={styles.subtitle}>
-              View all carwash insights and performance.
-            </Text>
+          {/* HEADER */}
+          <View style={styles.header}>
+            <View style={styles.headerLeft}>
+              <View style={styles.headerIcon}>
+                <Ionicons
+                  name="bar-chart-outline"
+                  size={27}
+                  color="#FFFFFF"
+                />
+              </View>
+
+              <View>
+                <Text style={styles.title}>ANALYTICS</Text>
+                <Text style={styles.subtitle}>
+                  View all carwash insights and performance.
+                </Text>
+              </View>
+            </View>
+
+            <View style={styles.headerRight}>
+              <Text style={styles.date}>{nowText}</Text>
+              <Text style={styles.time}>{timeText}</Text>
+
+              <Pressable
+                onPress={() => router.push('/notifications')}
+                style={styles.headerButton}
+              >
+                <Ionicons
+                  name="notifications-outline"
+                  size={22}
+                  color="#FFFFFF"
+                />
+              </Pressable>
+            </View>
           </View>
 
-          <View style={styles.headerRight}>
-            <Text style={styles.date}>Dec 30, 2026</Text>
-            <Text style={styles.time}>11:59 AM</Text>
-             
-    <Pressable
-  onPress={() => router.push('/notifications')}
->
-  <Ionicons
-    name="notifications-outline"
-    size={30}
-    color="#FFFFFF"
-    style={styles.bell}
-  />
-</Pressable>
+          {/* INTRO */}
+          <View style={styles.pageIntro}>
+            <View>
+              <Text style={styles.pageTitle}>
+                Performance Overview
+              </Text>
+              <Text style={styles.pageDescription}>
+                Live insights calculated from your Supabase
+                transactions.
+              </Text>
+            </View>
 
-  
+            <View style={styles.connectionBadge}>
+              <View
+                style={[
+                  styles.connectionDot,
+                  {
+                    backgroundColor: serverConnected
+                      ? '#20C77A'
+                      : '#F04444',
+                  },
+                ]}
+              />
+              <Text
+                style={[
+                  styles.connectionText,
+                  {
+                    color: serverConnected
+                      ? '#16865A'
+                      : '#C62E2E',
+                  },
+                ]}
+              >
+                {serverConnected
+                  ? 'Server Connected'
+                  : 'Server Offline'}
+              </Text>
+            </View>
           </View>
-        </View>
-
 
           {/* SUMMARY CARDS */}
-          <View style={styles.summaryRow}>
-
+          <View
+            style={[
+              styles.summaryRow,
+              isCompact && styles.summaryRowCompact,
+            ]}
+          >
             <SummaryCard
-              title="TODAY'S REVENUE"
+              title="REVENUE"
               icon="cash-outline"
-              value="₱ 50.00"
-              detail="vs yesterday   ↑ 12%"
+              value={`₱${revenue.toFixed(2)}`}
+              detail={`${filter} completed revenue`}
             />
 
             <SummaryCard
-              title="TODAY'S SESSIONS"
+              title="SESSIONS"
               icon="person-outline"
-              value="2"
-              detail="vs yesterday   ↑ 5"
+              value={String(sessions)}
+              detail={`${filter} recorded sessions`}
             />
 
             <SummaryCard
               title="AVERAGE PAYMENT"
               icon="bar-chart-outline"
-              value="₱ 20.00"
+              value={`₱${averagePayment.toFixed(2)}`}
               detail="per session"
             />
-
           </View>
 
           {/* FILTERS */}
           <View style={styles.filters}>
-
             <FilterButton
               label="Today"
               icon="calendar-outline"
@@ -107,28 +329,36 @@ export default function AnalyticsScreen() {
               active={filter === 'This Month'}
               onPress={() => setFilter('This Month')}
             />
-
           </View>
 
           {/* ANALYTICS GRID */}
           <View style={styles.analyticsCard}>
-
             {/* TOP ROW */}
-            <View style={styles.topRow}>
-
-              {/* REVENUE */}
+            <View
+              style={[
+                styles.topRow,
+                isCompact && styles.rowCompact,
+              ]}
+            >
               <View style={styles.largeChartCard}>
                 <Text style={styles.chartTitle}>
                   REVENUE OVER TIME
-                  <Text style={styles.chartSubTitle}> ({filter.toLowerCase()})</Text>
+                  <Text style={styles.chartSubTitle}>
+                    {' '}
+                    ({filter.toLowerCase()})
+                  </Text>
                 </Text>
 
-                <RevenueChart />
+                <RevenueChart
+                  data={chartData}
+                  maxValue={maxRevenue}
+                />
               </View>
 
-              {/* MOST USED SERVICE */}
               <View style={styles.smallCard}>
-                <Text style={styles.chartTitle}>MOST USED SERVICE</Text>
+                <Text style={styles.chartTitle}>
+                  MOST USED SERVICE
+                </Text>
 
                 <View style={styles.starCircle}>
                   <Ionicons
@@ -139,73 +369,88 @@ export default function AnalyticsScreen() {
                 </View>
 
                 <Text style={styles.serviceName}>
-                  WATER PRESSURE
+                  {mostUsedService.toUpperCase()}
+                </Text>
+
+                <Text style={styles.serviceDetail}>
+                  {serviceCounts[mostUsedService] || 0}{' '}
+                  session
+                  {(serviceCounts[mostUsedService] || 0) ===
+                  1
+                    ? ''
+                    : 's'}
                 </Text>
               </View>
-
             </View>
 
             {/* MIDDLE ROW */}
-            <View style={styles.middleRow}>
-
-              {/* SESSION TREND */}
+            <View
+              style={[
+                styles.middleRow,
+                isCompact && styles.rowCompact,
+              ]}
+            >
               <View style={styles.largeChartCard}>
                 <Text style={styles.chartTitle}>
                   SESSION TREND
-                  <Text style={styles.chartSubTitle}> ({filter.toLowerCase()})</Text>
+                  <Text style={styles.chartSubTitle}>
+                    {' '}
+                    ({filter.toLowerCase()})
+                  </Text>
                 </Text>
 
-                <SessionChart />
+                <SessionChart
+                  data={chartData}
+                  maxValue={maxSessions}
+                />
               </View>
 
-              {/* USAGE DISTRIBUTION */}
               <View style={styles.smallCard}>
                 <Text style={styles.chartTitle}>
                   USAGE DISTRIBUTION
                 </Text>
 
-                <UsageChart />
+                <UsageChart
+                  entries={serviceEntries}
+                />
 
                 <View style={styles.legend}>
-
-                  <LegendItem
-                    color="#173BFF"
-                    label="Water Pressure"
-                  />
-
-                  <LegendItem
-                    color="#00C9E5"
-                    label="Soap"
-                  />
-
-                  <LegendItem
-                    color="#FF8A00"
-                    label="Blower"
-                  />
-
-                  <LegendItem
-                    color="#E4C62B"
-                    label="Faucet"
-                  />
-
+                  {serviceEntries.length === 0 ? (
+                    <Text style={styles.noDataText}>
+                      No service data
+                    </Text>
+                  ) : (
+                    serviceEntries
+                      .slice(0, 4)
+                      .map(([service, count], index) => (
+                        <LegendItem
+                          key={service}
+                          color={
+                            [
+                              '#173BFF',
+                              '#00C9E5',
+                              '#FF8A00',
+                              '#E4C62B',
+                            ][index]
+                          }
+                          label={`${service} (${count})`}
+                        />
+                      ))
+                  )}
                 </View>
               </View>
-
             </View>
 
             {/* WATER QUALITY */}
             <View style={styles.waterCard}>
-
               <Text style={styles.chartTitle}>
                 WATER QUALITY
               </Text>
 
               <View style={styles.waterContent}>
-
                 <WaterGauge />
 
                 <View style={styles.waterStats}>
-
                   <WaterStat
                     icon="water-outline"
                     label="CONTINUITY"
@@ -230,30 +475,18 @@ export default function AnalyticsScreen() {
                   <WaterStat
                     icon="time-outline"
                     label="LAST UPDATED"
-                    value="DEC 30 2026 11:59 AM"
+                    value={`${nowText.toUpperCase()} ${timeText}`}
                     color={PURPLE}
                   />
-
                 </View>
-
               </View>
-
             </View>
-
           </View>
-
         </ScrollView>
-
-        
-
       </View>
     </SafeAreaView>
   );
 }
-
-/* =====================================================
-   SUMMARY CARD
-===================================================== */
 
 function SummaryCard({
   title,
@@ -268,34 +501,26 @@ function SummaryCard({
 }) {
   return (
     <View style={styles.summaryCard}>
+      <View style={styles.summaryTop}>
+        <View style={styles.summaryIcon}>
+          <Ionicons
+            name={icon}
+            size={21}
+            color={PURPLE}
+          />
+        </View>
 
-      <Text style={styles.summaryTitle}>
-        {title}
-      </Text>
-
-      <View style={styles.summaryIcon}>
-        <Ionicons
-          name={icon}
-          size={20}
-          color="#FFFFFF"
-        />
+        <Text style={styles.summaryTitle}>
+          {title}
+        </Text>
       </View>
 
-      <Text style={styles.summaryValue}>
-        {value}
-      </Text>
+      <Text style={styles.summaryValue}>{value}</Text>
 
-      <Text style={styles.summaryDetail}>
-        {detail}
-      </Text>
-
+      <Text style={styles.summaryDetail}>{detail}</Text>
     </View>
   );
 }
-
-/* =====================================================
-   FILTER
-===================================================== */
 
 function FilterButton({
   label,
@@ -316,11 +541,10 @@ function FilterButton({
         active && styles.filterButtonActive,
       ]}
     >
-
       {icon && (
         <Ionicons
           name={icon}
-          size={19}
+          size={17}
           color={active ? '#FFFFFF' : PURPLE}
         />
       )}
@@ -333,151 +557,207 @@ function FilterButton({
       >
         {label}
       </Text>
-
     </Pressable>
   );
 }
 
-/* =====================================================
-   REVENUE CHART
-===================================================== */
-
-function RevenueChart() {
-  const bars = [
-    { day: 'Mon', value: 42 },
-    { day: 'Tue', value: 68 },
-    { day: 'Wed', value: 53 },
-    { day: 'Thu', value: 35 },
-    { day: 'Fri', value: 20 },
-    { day: 'Sat', value: 8 },
-    { day: 'Sun', value: 0 },
-  ];
-
+function RevenueChart({
+  data,
+  maxValue,
+}: {
+  data: { label: string; revenue: number }[];
+  maxValue: number;
+}) {
   return (
     <View style={styles.chart}>
-
       <View style={styles.yAxis}>
-        <Text>₱400</Text>
-        <Text>₱300</Text>
-        <Text>₱200</Text>
-        <Text>₱100</Text>
-        <Text>₱0</Text>
+        <Text style={styles.axisText}>
+          ₱{Math.round(maxValue)}
+        </Text>
+        <Text style={styles.axisText}>
+          ₱{Math.round(maxValue * 0.75)}
+        </Text>
+        <Text style={styles.axisText}>
+          ₱{Math.round(maxValue * 0.5)}
+        </Text>
+        <Text style={styles.axisText}>
+          ₱{Math.round(maxValue * 0.25)}
+        </Text>
+        <Text style={styles.axisText}>₱0</Text>
       </View>
 
       <View style={styles.bars}>
-
-        {bars.map((item) => (
-          <View
-            key={item.day}
-            style={styles.barColumn}
-          >
+        {data.map((item) => (
+          <View key={item.label} style={styles.barColumn}>
             <Text style={styles.barValue}>
-              {item.value > 0 ? `₱${item.value}` : ''}
+              {item.revenue > 0
+                ? `₱${item.revenue.toFixed(0)}`
+                : ''}
             </Text>
 
             <View
               style={[
                 styles.bar,
                 {
-                  height: item.value,
+                  height: Math.max(
+                    2,
+                    (item.revenue / maxValue) * 82
+                  ),
                 },
               ]}
             />
 
             <Text style={styles.dayLabel}>
-              {item.day}
+              {item.label}
             </Text>
           </View>
         ))}
-
       </View>
-
     </View>
   );
 }
 
-/* =====================================================
-   SESSION CHART
-===================================================== */
-
-function SessionChart() {
-  const bars = [
-    { day: 'Mon', value: 31 },
-    { day: 'Tue', value: 25 },
-    { day: 'Wed', value: 38 },
-    { day: 'Thu', value: 24 },
-    { day: 'Fri', value: 15 },
-    { day: 'Sat', value: 2 },
-    { day: 'Sun', value: 0 },
-  ];
-
+function SessionChart({
+  data,
+  maxValue,
+}: {
+  data: { label: string; sessions: number }[];
+  maxValue: number;
+}) {
   return (
     <View style={styles.chart}>
-
       <View style={styles.yAxis}>
-        <Text>60</Text>
-        <Text>45</Text>
-        <Text>30</Text>
-        <Text>15</Text>
-        <Text>0</Text>
+        <Text style={styles.axisText}>
+          {Math.round(maxValue)}
+        </Text>
+        <Text style={styles.axisText}>
+          {Math.round(maxValue * 0.75)}
+        </Text>
+        <Text style={styles.axisText}>
+          {Math.round(maxValue * 0.5)}
+        </Text>
+        <Text style={styles.axisText}>
+          {Math.round(maxValue * 0.25)}
+        </Text>
+        <Text style={styles.axisText}>0</Text>
       </View>
 
       <View style={styles.bars}>
-
-        {bars.map((item) => (
-          <View
-            key={item.day}
-            style={styles.barColumn}
-          >
+        {data.map((item) => (
+          <View key={item.label} style={styles.barColumn}>
             <Text style={styles.barValue}>
-              {item.value > 0 ? item.value : ''}
+              {item.sessions > 0 ? item.sessions : ''}
             </Text>
 
             <View
               style={[
                 styles.sessionBar,
                 {
-                  height: item.value,
+                  height: Math.max(
+                    2,
+                    (item.sessions / maxValue) * 82
+                  ),
                 },
               ]}
             />
 
             <Text style={styles.dayLabel}>
-              {item.day}
+              {item.label}
             </Text>
           </View>
         ))}
-
       </View>
-
     </View>
   );
 }
 
-/* =====================================================
-   USAGE CHART
-===================================================== */
+function UsageChart({
+  entries,
+}: {
+  entries: [string, number][];
+}) {
+  const total = entries.reduce(
+    (sum, [, count]) => sum + count,
+    0
+  );
 
-function UsageChart() {
+  if (!total) {
+    return (
+      <View style={styles.noDataCircle}>
+        <Ionicons
+          name="pie-chart-outline"
+          size={28}
+          color="#A0A2AA"
+        />
+      </View>
+    );
+  }
+
+  const first = entries[0]?.[1] || 0;
+  const second = entries[1]?.[1] || 0;
+  const third = entries[2]?.[1] || 0;
+  const fourth = entries[3]?.[1] || 0;
+
   return (
     <View style={styles.pieContainer}>
-
       <View style={styles.pie}>
-
-        <View style={styles.pieBlue} />
-        <View style={styles.pieCyan} />
-        <View style={styles.pieOrange} />
-        <View style={styles.pieYellow} />
-
+        <View
+          style={[
+            styles.pieSlice,
+            {
+              backgroundColor: '#173BFF',
+              transform: [
+                {
+                  rotate: `${(first / total) * 360}deg`,
+                },
+              ],
+            },
+          ]}
+        />
+        <View
+          style={[
+            styles.pieSlice,
+            {
+              backgroundColor: '#00C9E5',
+              transform: [
+                {
+                  rotate: `${((first + second) / total) * 360}deg`,
+                },
+              ],
+            },
+          ]}
+        />
+        <View
+          style={[
+            styles.pieSlice,
+            {
+              backgroundColor: '#FF8A00',
+              transform: [
+                {
+                  rotate: `${((first + second + third) / total) * 360}deg`,
+                },
+              ],
+            },
+          ]}
+        />
+        <View
+          style={[
+            styles.pieSlice,
+            {
+              backgroundColor: '#E4C62B',
+              transform: [
+                {
+                  rotate: `${((first + second + third + fourth) / total) * 360}deg`,
+                },
+              ],
+            },
+          ]}
+        />
+        <View style={styles.pieHole} />
       </View>
-
     </View>
   );
 }
-
-/* =====================================================
-   LEGEND
-===================================================== */
 
 function LegendItem({
   color,
@@ -488,7 +768,6 @@ function LegendItem({
 }) {
   return (
     <View style={styles.legendItem}>
-
       <View
         style={[
           styles.legendDot,
@@ -496,47 +775,25 @@ function LegendItem({
         ]}
       />
 
-      <Text style={styles.legendText}>
-        {label}
-      </Text>
-
+      <Text style={styles.legendText}>{label}</Text>
     </View>
   );
 }
-
-/* =====================================================
-   WATER GAUGE
-===================================================== */
 
 function WaterGauge() {
   return (
     <View style={styles.gauge}>
-
       <View style={styles.gaugeRing}>
-
         <View style={styles.gaugeInner}>
-
-          <Text style={styles.gaugeValue}>
-            NTU
-          </Text>
-
-          <Text style={styles.gaugeNumber}>
-            8
-          </Text>
-
+          <Text style={styles.gaugeValue}>NTU</Text>
+          <Text style={styles.gaugeNumber}>8</Text>
         </View>
-
       </View>
 
       <View style={styles.gaugeNeedle} />
-
     </View>
   );
 }
-
-/* =====================================================
-   WATER STAT
-===================================================== */
 
 function WaterStat({
   icon,
@@ -551,15 +808,9 @@ function WaterStat({
 }) {
   return (
     <View style={styles.waterStat}>
-
-      <Ionicons
-        name={icon}
-        size={13}
-        color={color}
-      />
+      <Ionicons name={icon} size={16} color={color} />
 
       <View style={styles.waterStatText}>
-
         <Text style={styles.waterStatLabel}>
           {label}
         </Text>
@@ -572,233 +823,300 @@ function WaterStat({
         >
           {value}
         </Text>
-
       </View>
-
     </View>
   );
 }
 
-/* =====================================================
-   STYLES
-===================================================== */
-
 const styles = StyleSheet.create({
-
   safeArea: {
     flex: 1,
-    backgroundColor: BLUE,
+    backgroundColor: '#F6F7FB',
   },
 
   container: {
     flex: 1,
-    width: '100%',
-    maxWidth: 430,
-    alignSelf: 'center',
-    backgroundColor: BLUE,
+    backgroundColor: '#F6F7FB',
   },
 
-  /* HEADER */
+  scrollContent: {
+    paddingBottom: 45,
+  },
 
-header: {
-  minHeight: 105,
-  flexDirection: 'row',
-  justifyContent: 'space-between',
-  alignItems: 'flex-start',
-},
+  header: {
+    minHeight: 88,
+    paddingHorizontal: 32,
+    paddingVertical: 16,
+    backgroundColor: PURPLE,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
 
- title: {
-    marginTop: 4,
-    fontSize: 20,
-    fontWeight: '700',
+  headerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+  },
+
+  headerIcon: {
+    width: 50,
+    height: 50,
+    borderRadius: 15,
+    backgroundColor: 'rgba(255,255,255,0.14)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  title: {
     color: '#FFFFFF',
+    fontSize: 23,
+    fontWeight: '900',
+    letterSpacing: 1,
   },
 
   subtitle: {
+    marginTop: 3,
+    color: '#DDD7FF',
+    fontSize: 12,
+  },
+
+  headerRight: {
+    alignItems: 'flex-end',
+  },
+
+  date: {
+    color: '#FFFFFF',
+    fontSize: 11,
+  },
+
+  time: {
+    color: '#DDD7FF',
+    fontSize: 11,
     marginTop: 2,
-    fontSize: 9,
+  },
+
+  headerButton: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    marginTop: 7,
+    backgroundColor: 'rgba(255,255,255,0.14)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  pageIntro: {
+    margin: 28,
+    marginBottom: 18,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 15,
+  },
+
+  pageTitle: {
+    color: '#17181D',
+    fontSize: 25,
+    fontWeight: '900',
+  },
+
+  pageDescription: {
+    marginTop: 4,
+    color: '#8A8D97',
+    fontSize: 12,
+  },
+
+  connectionBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E8E9EF',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+  },
+
+  connectionDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+
+  connectionText: {
+    fontSize: 11,
+    fontWeight: '800',
+  },
+
+  summaryRow: {
+    marginHorizontal: 28,
+    flexDirection: 'row',
+    gap: 15,
+  },
+
+  summaryRowCompact: {
+    flexDirection: 'column',
+  },
+
+  summaryCard: {
+    flex: 1,
+    minHeight: 140,
+    backgroundColor: CARD,
+    borderRadius: 17,
+    padding: 18,
+    borderWidth: 1,
+    borderColor: '#E8E9EF',
+  },
+
+  summaryTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+
+  summaryIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 12,
+    backgroundColor: '#F5F2FF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  summaryTitle: {
+    color: '#777B87',
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 0.6,
+  },
+
+  summaryValue: {
+    marginTop: 15,
+    color: PURPLE,
+    fontSize: 25,
+    fontWeight: '900',
+  },
+
+  summaryDetail: {
+    marginTop: 3,
+    color: '#999CA5',
+    fontSize: 10,
+  },
+
+  filters: {
+    marginHorizontal: 28,
+    marginTop: 18,
+    marginBottom: 20,
+    flexDirection: 'row',
+    gap: 8,
+  },
+
+  filterButton: {
+    height: 41,
+    paddingHorizontal: 15,
+    borderRadius: 9,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E8E9EF',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 7,
+  },
+
+  filterButtonActive: {
+    backgroundColor: PURPLE,
+    borderColor: PURPLE,
+  },
+
+  filterText: {
+    color: '#333333',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+
+  filterTextActive: {
     color: '#FFFFFF',
   },
 
-headerRight: {
-  alignItems: 'flex-end',
-},
-
-date: {
-  color: '#FFFFFF',
-  fontSize: 12,
-},
-
-time: {
-  color: '#FFFFFF',
-  fontSize: 12,
-  textAlign: 'right',
-},
-
- bell: {
-    marginTop: 12,
-    marginRight: 5,
-  },
-
-  /* SCROLL */
-
-scrollContent: {
-  paddingHorizontal: 18,
-  paddingTop: 18,
-  paddingBottom: 120,
-},
-
- /* SUMMARY */
-
-summaryRow: {
-  flexDirection: 'row',
-  gap: 12,
-},
-
-summaryCard: {
-  flex: 1,
-  minHeight: 125,
-  backgroundColor: CARD,
-  borderRadius: 14,
-  alignItems: 'center',
-  paddingTop: 13,
-},
-
-summaryTitle: {
-  fontSize: 10,
-  color: '#333333',
-  textAlign: 'center',
-  fontWeight: '500',
-},
-
-summaryIcon: {
-  width: 44,
-  height: 44,
-  borderRadius: 22,
-  backgroundColor: PURPLE,
-  alignItems: 'center',
-  justifyContent: 'center',
-  marginTop: 7,
-},
-
-summaryValue: {
-  marginTop: 7,
-  color: PURPLE,
-  fontSize: 16,
-  fontWeight: '600',
-},
-
-summaryDetail: {
-  marginTop: 3,
-  fontSize: 8,
-  color: '#777777',
-},
- /* FILTERS */
-
-filters: {
-  flexDirection: 'row',
-  justifyContent: 'center',
-  gap: 8,
-  marginTop: 16,
-  marginBottom: 5,
-},
-
-filterButton: {
-  height: 41,
-  minWidth: 115,
-  paddingHorizontal: 15,
-  borderRadius: 9,
-  backgroundColor: CARD,
-  flexDirection: 'row',
-  alignItems: 'center',
-  justifyContent: 'center',
-  gap: 7,
-},
-
-filterButtonActive: {
-  backgroundColor: PURPLE,
-},
-
-filterText: {
-  color: '#333333',
-  fontSize: 11,
-},
-
-filterTextActive: {
-  color: '#FFFFFF',
-},
-
-  /* MAIN ANALYTICS CARD */
-
   analyticsCard: {
-    backgroundColor: CARD,
-    borderRadius: 17,
-    padding: 9,
+    marginHorizontal: 28,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: '#E8E9EF',
   },
 
   topRow: {
     flexDirection: 'row',
-    gap: 6,
-    marginBottom: 7,
+    gap: 8,
+    marginBottom: 8,
   },
 
   middleRow: {
     flexDirection: 'row',
-    gap: 6,
-    marginBottom: 7,
+    gap: 8,
+    marginBottom: 8,
   },
 
- largeChartCard: {
-  flex: 1.65,
-  minHeight: 145,
-  backgroundColor: '#E9E9E9',
-  borderWidth: 1,
-  borderColor: '#999999',
-  borderRadius: 9,
-  padding: 8,
-},
+  rowCompact: {
+    flexDirection: 'column',
+  },
 
-smallCard: {
-  flex: 0.95,
-  minHeight: 145,
-  backgroundColor: '#E9E9E9',
-  borderWidth: 1,
-  borderColor: '#999999',
-  borderRadius: 9,
-  padding: 8,
-  alignItems: 'center',
-},
- chartTitle: {
-  color: '#222222',
-  fontSize: 4.5,
-  fontWeight: '700',
-},
+  largeChartCard: {
+    flex: 1.65,
+    minHeight: 190,
+    backgroundColor: '#F8F8FA',
+    borderWidth: 1,
+    borderColor: '#E2E2E8',
+    borderRadius: 12,
+    padding: 13,
+  },
 
-chartSubTitle: {
-  color: '#777777',
-  fontSize: 3.5,
-  fontWeight: '400',
-},
+  smallCard: {
+    flex: 0.95,
+    minHeight: 190,
+    backgroundColor: '#F8F8FA',
+    borderWidth: 1,
+    borderColor: '#E2E2E8',
+    borderRadius: 12,
+    padding: 13,
+    alignItems: 'center',
+  },
 
-  /* CHART */
+  chartTitle: {
+    color: '#222222',
+    fontSize: 11,
+    fontWeight: '900',
+    letterSpacing: 0.3,
+  },
+
+  chartSubTitle: {
+    color: '#777777',
+    fontSize: 10,
+    fontWeight: '500',
+  },
 
   chart: {
-  flex: 1,
-  flexDirection: 'row',
-  marginTop: 9,
-},
+    flex: 1,
+    flexDirection: 'row',
+    marginTop: 12,
+  },
 
- yAxis: {
-  width: 35,
-  justifyContent: 'space-between',
-  paddingBottom: 10,
-},
+  yAxis: {
+    width: 42,
+    justifyContent: 'space-between',
+    paddingBottom: 18,
+  },
 
-yAxisText: {
-  fontSize: 4,
-  color: '#555555',
-  textAlign: 'right',
-},
+  axisText: {
+    fontSize: 8,
+    color: '#777777',
+    textAlign: 'right',
+  },
 
   bars: {
     flex: 1,
@@ -807,168 +1125,172 @@ yAxisText: {
     justifyContent: 'space-around',
     borderBottomWidth: 1,
     borderLeftWidth: 1,
-    borderColor: '#999999',
-    paddingLeft: 3,
+    borderColor: '#C8C8CF',
+    paddingLeft: 5,
+    paddingBottom: 1,
   },
 
   barColumn: {
-  height: '100%',
-  alignItems: 'center',
-  justifyContent: 'flex-end',
-  width: 20,
-},
-
-bar: {
-  width: 8,
-  backgroundColor: RED,
-  minHeight: 1,
-},
-  sessionBar: {
-    width: 8,
-    backgroundColor: RED,
-    minHeight: 1,
+    height: '100%',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    width: 30,
   },
 
-barValue: {
-  color: '#333333',
-  fontSize: 4,
-  marginBottom: 1,
-  textAlign: 'center',
-  width: 35,
-},
+  bar: {
+    width: 14,
+    backgroundColor: RED,
+    borderTopLeftRadius: 4,
+    borderTopRightRadius: 4,
+  },
 
+  sessionBar: {
+    width: 14,
+    backgroundColor: PURPLE,
+    borderTopLeftRadius: 4,
+    borderTopRightRadius: 4,
+  },
 
-dayLabel: {
-  color: '#555555',
-  fontSize: 3,
-  marginTop: 2,
-},
-  /* SERVICE */
+  barValue: {
+    color: '#333333',
+    fontSize: 8,
+    marginBottom: 3,
+    textAlign: 'center',
+    width: 40,
+  },
 
-starCircle: {
-  width: 36,
-  height: 36,
-  borderRadius: 18,
-  backgroundColor: '#008A1C',
-  alignItems: 'center',
-  justifyContent: 'center',
-  marginTop: 12,
-},
+  dayLabel: {
+    color: '#555555',
+    fontSize: 8,
+    marginTop: 4,
+  },
+
+  starCircle: {
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    backgroundColor: '#008A1C',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 35,
+  },
 
   serviceName: {
     color: PURPLE,
-    fontSize: 7,
-    fontWeight: '700',
+    fontSize: 12,
+    fontWeight: '900',
     textAlign: 'center',
-    marginTop: 5,
+    marginTop: 10,
   },
 
-  /* PIE */
+  serviceDetail: {
+    marginTop: 4,
+    color: '#8A8D97',
+    fontSize: 10,
+  },
 
   pieContainer: {
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 5,
+    marginTop: 18,
   },
 
   pie: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
+    width: 95,
+    height: 95,
+    borderRadius: 48,
     overflow: 'hidden',
     backgroundColor: '#173BFF',
     position: 'relative',
   },
 
-  pieBlue: {
+  pieSlice: {
     position: 'absolute',
-    width: 60,
-    height: 60,
-    backgroundColor: '#173BFF',
-  },
-
-  pieCyan: {
-    position: 'absolute',
-    width: 31,
-    height: 31,
+    width: '50%',
+    height: '50%',
     right: 0,
     top: 0,
-    backgroundColor: '#00C9E5',
+    transformOrigin: '0% 100%',
   },
 
-  pieOrange: {
+  pieHole: {
     position: 'absolute',
-    width: 30,
-    height: 30,
-    left: 0,
-    top: 0,
-    backgroundColor: '#FF8A00',
+    width: 45,
+    height: 45,
+    borderRadius: 23,
+    backgroundColor: '#F8F8FA',
+    left: 25,
+    top: 25,
   },
 
-  pieYellow: {
-    position: 'absolute',
-    width: 20,
-    height: 20,
-    left: 20,
-    bottom: 0,
-    backgroundColor: '#E4C62B',
+  noDataCircle: {
+    width: 95,
+    height: 95,
+    borderRadius: 48,
+    backgroundColor: '#ECECF1',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 18,
   },
 
   legend: {
     width: '100%',
-    marginTop: 4,
+    marginTop: 10,
   },
 
   legendItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginTop: 2,
+    marginTop: 5,
   },
 
   legendDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    marginRight: 3,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginRight: 6,
   },
 
   legendText: {
-    color: '#333333',
-    fontSize: 4.5,
+    color: '#555555',
+    fontSize: 9,
+    flex: 1,
   },
 
-  /* WATER QUALITY */
+  noDataText: {
+    color: '#999CA5',
+    fontSize: 9,
+    textAlign: 'center',
+  },
 
   waterCard: {
-    backgroundColor: '#E9E9E9',
+    backgroundColor: '#F8F8FA',
     borderWidth: 1,
-    borderColor: '#999999',
-    borderRadius: 9,
-    minHeight: 92,
-    padding: 7,
+    borderColor: '#E2E2E8',
+    borderRadius: 12,
+    minHeight: 145,
+    padding: 13,
   },
 
   waterContent: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginTop: 4,
+    marginTop: 8,
   },
 
-  /* GAUGE */
-
   gauge: {
-    width: 105,
-    height: 67,
+    width: 150,
+    height: 90,
     alignItems: 'center',
     justifyContent: 'center',
     position: 'relative',
   },
 
   gaugeRing: {
-    width: 62,
-    height: 62,
-    borderRadius: 31,
-    borderWidth: 8,
+    width: 78,
+    height: 78,
+    borderRadius: 39,
+    borderWidth: 10,
     borderColor: '#FF3030',
     borderLeftColor: '#3185FF',
     borderBottomColor: '#3185FF',
@@ -977,68 +1299,64 @@ starCircle: {
   },
 
   gaugeInner: {
-    width: 39,
-    height: 39,
-    borderRadius: 20,
+    width: 49,
+    height: 49,
+    borderRadius: 25,
     backgroundColor: '#FFFFFF',
     alignItems: 'center',
     justifyContent: 'center',
   },
 
   gaugeValue: {
-    fontSize: 6,
+    fontSize: 8,
     color: '#555555',
   },
 
   gaugeNumber: {
-    fontSize: 10,
-    fontWeight: '700',
+    fontSize: 15,
+    fontWeight: '900',
     color: '#222222',
   },
 
   gaugeNeedle: {
     position: 'absolute',
     width: 3,
-    height: 25,
+    height: 28,
     backgroundColor: '#333333',
-    transform: [
-      { rotate: '-55deg' },
-    ],
-    bottom: 17,
-    left: 51,
+    transform: [{ rotate: '-55deg' }],
+    bottom: 22,
+    left: 74,
   },
-
-  /* WATER STATS */
 
   waterStats: {
     flex: 1,
-    gap: 3,
+    gap: 5,
   },
 
   waterStat: {
-    height: 21,
+    minHeight: 30,
     borderWidth: 1,
-    borderColor: '#AAAAAA',
-    borderRadius: 5,
+    borderColor: '#DDDEE4',
+    borderRadius: 7,
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 5,
-    backgroundColor: '#E1E1E1',
+    paddingHorizontal: 8,
+    backgroundColor: '#FFFFFF',
   },
 
   waterStatText: {
-    marginLeft: 4,
+    marginLeft: 7,
   },
 
   waterStatLabel: {
-    color: '#555555',
-    fontSize: 4,
+    color: '#777777',
+    fontSize: 8,
+    fontWeight: '800',
   },
 
   waterStatValue: {
-    fontSize: 5.5,
-    fontWeight: '700',
-    marginTop: 1,
+    fontSize: 9,
+    fontWeight: '900',
+    marginTop: 2,
   },
-
 });

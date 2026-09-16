@@ -7,8 +7,8 @@
 #include "carwash_logic.h"
 #include <Arduino.h>
 #include "ui.h"
-#include "espnow.h"
-#include "commands.h"
+#include "uart_comm.h"
+#include "commands.h"       
 
 
 // ======================================================
@@ -643,4 +643,3 @@ void faucet_test_clicked(lv_event_t * e)
 {
     startFaucetTest();
 }
-

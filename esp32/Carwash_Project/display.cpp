@@ -13,7 +13,8 @@ Arduino_ESP32RGBPanel *bus = new Arduino_ESP32RGBPanel(
     16000000,
     false,
     0,
-    0
+    0,
+    800 * 10
 );
 
 Arduino_GFX *gfx = new Arduino_RGB_Display(

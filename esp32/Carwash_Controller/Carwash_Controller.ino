@@ -1,28 +1,116 @@
+/*
+ * ============================================================
+ * CARWASH CONTROLLER - WIRED UART
+ * ============================================================
+ *
+ * LOCAL CONTROL:
+ *   LCD ESP32-S3 <-> Controller ESP32-S3
+ *
+ * UART WIRING:
+ *
+ *   LCD GPIO17 TX  ->  Controller GPIO22 RX
+ *   LCD GPIO18 RX  <-  Controller GPIO23 TX
+ *   LCD GND        ->  Controller GND
+ *
+ * DO NOT CONNECT 3.3V BETWEEN THE BOARDS.
+ *
+ *
+ * RELAYS - ACTIVE LOW:
+ *
+ *   LOW  = ON
+ *   HIGH = OFF
+ *
+ *   WATER   = GPIO25
+ *   SOAP    = GPIO26
+ *   BLOWER  = GPIO27
+ *   FAUCET  = GPIO33
+ *
+ *
+ * PHYSICAL BUTTONS - INPUT_PULLUP:
+ *
+ *   PAUSE  = GPIO21
+ *   WATER  = GPIO18
+ *   SOAP   = GPIO5
+ *   BLOWER = GPIO17
+ *   FAUCET = GPIO4
+ *
+ *
+ * UART PROTOCOL:
+ *
+ *   LCD -> Controller:
+ *     <WATER_START>
+ *     <WATER_STOP>
+ *     <SOAP_START>
+ *     <SOAP_STOP>
+ *     <BLOWER_START>
+ *     <BLOWER_STOP>
+ *     <FAUCET_START>
+ *     <FAUCET_STOP>
+ *     <ALL_STOP>
+ *     <PING>
+ *
+ *   Controller -> LCD:
+ *     <ONLINE>
+ *     <PHYSICAL_PAUSE>
+ *     <PHYSICAL_WATER>
+ *     <PHYSICAL_SOAP>
+ *     <PHYSICAL_BLOWER>
+ *     <PHYSICAL_FAUCET>
+ *     ACK messages
+ *
+ * Wi-Fi is secondary only.
+ * Local UART and physical buttons continue working
+ * when Wi-Fi is unavailable.
+ *
+ * ============================================================
+ */
+
+#include <Arduino.h>
 #include <WiFi.h>
-#include <esp_now.h>
-#include <esp_wifi.h>
-
-#define ESPNOW_CHANNEL 11
-// ======================================================
-// ESP-NOW CHANNEL
-// BOTH ESP32 BOARDS MUST USE THE SAME CHANNEL
-// ======================================================
+#include "secrets.h"
 
 
+// ============================================================
+// UART
+// ============================================================
 
-// ======================================================
-// RELAY PINS
-// ======================================================
+#define CONTROLLER_UART_RX 22
+#define CONTROLLER_UART_TX 23
+
+#define UART_BAUD 115200
+
+HardwareSerial CarwashUART(1);
+
+
+// ============================================================
+// RELAY OUTPUTS
+// ============================================================
+//
+// ACTIVE LOW:
+//
+//   LOW  = ON
+//   HIGH = OFF
+//
+// IMPORTANT:
+// BLOWER IS GPIO27.
+// FAUCET IS GPIO33.
+// ============================================================
 
 #define RELAY_WATER   25
 #define RELAY_SOAP    26
-#define RELAY_BLOWER  32
+#define RELAY_BLOWER  27
 #define RELAY_FAUCET  33
 
 
-// ======================================================
-// PHYSICAL BUTTONS
-// ======================================================
+// ============================================================
+// PHYSICAL BUTTON INPUTS
+// ============================================================
+//
+// INPUT_PULLUP:
+//
+//   HIGH = RELEASED
+//   LOW  = PRESSED
+// ============================================================
 
 #define BTN_PAUSE         21
 #define BTN_WATER_START   18
@@ -31,16 +119,20 @@
 #define BTN_FAUCET_START   4
 
 
-// ======================================================
-// BUTTON SETTINGS
-// ======================================================
+// ============================================================
+// BUTTON TIMING
+// ============================================================
 
-const unsigned long BUTTON_DEBOUNCE = 150;
+const unsigned long BUTTON_DEBOUNCE =
+    150UL;
+
+const unsigned long PAUSE_RELEASE_DEBOUNCE =
+    500UL;
 
 
-// ======================================================
+// ============================================================
 // BUTTON STATES
-// ======================================================
+// ============================================================
 
 bool lastPauseState  = HIGH;
 bool lastWaterState  = HIGH;
@@ -55,135 +147,144 @@ unsigned long lastBlowerTime = 0;
 unsigned long lastFaucetTime = 0;
 
 
-// ======================================================
-// LCD ESP32 MAC
-// ======================================================
+// ============================================================
+// PAUSE BUTTON LOCK
+// ============================================================
+//
+// One physical press produces exactly ONE
+// PHYSICAL_PAUSE command.
+//
+// The button must be released before another
+// PAUSE command can be generated.
+// ============================================================
 
-uint8_t lcdMAC[] =
-{
-    0xDC,
-    0xB4,
-    0xD9,
-    0x04,
-    0x3E,
-    0xB8
-};
+bool pauseLocked = false;
 
-
-// ======================================================
-// MESSAGE STRUCTURE
-// MUST MATCH LCD
-// ======================================================
-
-typedef struct
-{
-    char command[32];
-} Message;
-
-Message incoming;
+unsigned long pauseReleaseTime = 0;
 
 
-// ======================================================
+// ============================================================
+// UART RECEIVE STATE
+// ============================================================
+
+static char uartFrame[64];
+
+static size_t uartFrameLength = 0;
+
+static bool uartInFrame = false;
+
+
+// ============================================================
 // HEARTBEAT
-// ======================================================
+// ============================================================
 
 unsigned long lastHeartbeat = 0;
 
-const unsigned long HEARTBEAT_INTERVAL = 1000;
+const unsigned long HEARTBEAT_INTERVAL =
+    5000UL;
 
 
-// ======================================================
-// SEND STATUS
-// ======================================================
+// ============================================================
+// WIFI
+// ============================================================
+//
+// Wi-Fi is secondary/background only.
+// It does NOT control the relays.
+// ============================================================
 
-volatile bool sendSuccess = false;
-volatile bool sendFailed  = false;
+unsigned long lastWiFiAttempt = 0;
+
+const unsigned long WIFI_RETRY_INTERVAL =
+    30000UL;
+
+const unsigned long WIFI_CONNECT_TIMEOUT =
+    10000UL;
 
 
-// ======================================================
-// SEND CALLBACK
-// ======================================================
+// ============================================================
+// FUNCTION DECLARATIONS
+// ============================================================
 
-void OnDataSent(
-    const wifi_tx_info_t *info,
-    esp_now_send_status_t status
+void sendFrame(
+    const char *message
+);
+
+void sendPhysicalCommand(
+    const char *command
+);
+
+void processUARTReceive();
+
+void processUARTCommand(
+    const char *command
+);
+
+bool buttonPressed(
+    uint8_t pin,
+    bool &lastState,
+    unsigned long &lastTime
+);
+
+bool pauseButtonPressed();
+
+void physicalButtonTask();
+
+void sendHeartbeat();
+
+void startWiFi();
+
+void wifiTask();
+
+
+// ============================================================
+// SEND UART FRAME
+// ============================================================
+//
+// Format:
+//
+//   <COMMAND>
+//
+// ============================================================
+
+void sendFrame(
+    const char *message
 )
 {
-    if(status == ESP_NOW_SEND_SUCCESS)
-    {
-        sendSuccess = true;
-    }
-    else
-    {
-        sendFailed = true;
-    }
+    CarwashUART.print("<");
+    CarwashUART.print(message);
+    CarwashUART.print(">\n");
+
+    Serial.print("UART TX -> LCD: <");
+    Serial.print(message);
+    Serial.println(">");
 }
 
 
-// ======================================================
-// SEND PHYSICAL COMMAND TO LCD
-// ======================================================
+// ============================================================
+// SEND PHYSICAL BUTTON COMMAND
+// ============================================================
 
-void sendPhysicalCommand(const char *command)
+void sendPhysicalCommand(
+    const char *command
+)
 {
-    Message message;
+    Serial.print("PHYSICAL -> ");
+    Serial.println(command);
 
-    memset(
-        &message,
-        0,
-        sizeof(message)
-    );
-
-    strncpy(
-        message.command,
-        command,
-        sizeof(message.command) - 1
-    );
-
-    esp_err_t result = esp_now_send(
-        lcdMAC,
-        (uint8_t *)&message,
-        sizeof(message)
-    );
-
-    Serial.print("Physical -> LCD: ");
-    Serial.print(command);
-
-    if(result == ESP_OK)
-    {
-        Serial.println(" | QUEUED");
-    }
-    else
-    {
-        Serial.print(" | ERROR ");
-        Serial.println(result);
-    }
+    sendFrame(command);
 }
 
 
-// ======================================================
-// BUTTON PRESS DETECTION
-// NON-BLOCKING
-// ======================================================
-
-// ======================================================
-// BUTTON DEBOUNCE
-// ======================================================
-
-
-
-// ======================================================
-// BUTTON PRESS DETECTION
+// ============================================================
+// NORMAL BUTTON PRESS DETECTION
+// ============================================================
 //
-// One physical press = ONE event.
+// Returns TRUE only once when a button changes:
 //
-// The button must:
-//   1. Be released
-//   2. Stay released for debounce time
-//   3. Then be pressed again
+//   HIGH -> LOW
 //
-// This prevents double-clicks caused by switch bounce.
-// ======================================================
+// after debounce.
+// ============================================================
 
 bool buttonPressed(
     uint8_t pin,
@@ -191,87 +292,157 @@ bool buttonPressed(
     unsigned long &lastTime
 )
 {
-    unsigned long now = millis();
+    const bool currentState =
+        digitalRead(pin);
 
-    bool currentState = digitalRead(pin);
+    const unsigned long now =
+        millis();
 
 
-    // ==================================================
-    // BUTTON PRESSED
-    // ==================================================
+    // --------------------------------------------------------
+    // BUTTON CURRENTLY PRESSED
+    // --------------------------------------------------------
 
     if(currentState == LOW)
     {
-        // Only accept the press if the previous
-        // accepted state was HIGH.
-
-        if(lastState == HIGH)
+        if(
+            lastState == HIGH &&
+            now - lastTime >= BUTTON_DEBOUNCE
+        )
         {
-            if(now - lastTime >= BUTTON_DEBOUNCE)
-            {
-                lastTime = now;
+            lastTime = now;
+            lastState = LOW;
 
-                // IMPORTANT:
-                // Immediately lock this button.
-                lastState = LOW;
-
-                return true;
-            }
+            return true;
         }
 
         return false;
     }
 
 
-    // ==================================================
+    // --------------------------------------------------------
     // BUTTON RELEASED
-    // ==================================================
+    // --------------------------------------------------------
 
-    if(currentState == HIGH)
+    if(
+        now - lastTime >= BUTTON_DEBOUNCE
+    )
     {
-        // Only unlock after the debounce period.
-
-        if(now - lastTime >= BUTTON_DEBOUNCE)
-        {
-            lastState = HIGH;
-        }
+        lastState = HIGH;
     }
-
 
     return false;
 }
 
-// ======================================================
+
+// ============================================================
+// PAUSE BUTTON
+// ============================================================
+//
+// One press = one PAUSE command.
+//
+// Holding the button does NOT repeatedly send PAUSE.
+//
+// The button must be released for
+// PAUSE_RELEASE_DEBOUNCE milliseconds.
+// ============================================================
+
+bool pauseButtonPressed()
+{
+    const bool currentState =
+        digitalRead(BTN_PAUSE);
+
+    const unsigned long now =
+        millis();
+
+
+    // --------------------------------------------------------
+    // BUTTON PRESSED
+    // --------------------------------------------------------
+
+    if(currentState == LOW)
+    {
+        pauseReleaseTime = 0;
+
+
+        if(!pauseLocked)
+        {
+            if(
+                now - lastPauseTime >=
+                BUTTON_DEBOUNCE
+            )
+            {
+                lastPauseTime = now;
+
+                pauseLocked = true;
+
+                Serial.println(
+                    "PHYSICAL PAUSE"
+                );
+
+                return true;
+            }
+        }
+    }
+
+
+    // --------------------------------------------------------
+    // BUTTON RELEASED
+    // --------------------------------------------------------
+
+    else
+    {
+        if(pauseLocked)
+        {
+            if(pauseReleaseTime == 0)
+            {
+                pauseReleaseTime = now;
+            }
+
+
+            if(
+                now - pauseReleaseTime >=
+                PAUSE_RELEASE_DEBOUNCE
+            )
+            {
+                pauseLocked = false;
+
+                pauseReleaseTime = 0;
+
+                lastPauseTime = now;
+
+                Serial.println(
+                    "PAUSE BUTTON READY"
+                );
+            }
+        }
+    }
+
+    return false;
+}
+
+
+// ============================================================
 // PHYSICAL BUTTON TASK
-// ======================================================
+// ============================================================
 
 void physicalButtonTask()
 {
-    // ==================================================
+    // --------------------------------------------------------
     // PAUSE
-    // ==================================================
+    // --------------------------------------------------------
 
-    if(
-        buttonPressed(
-            BTN_PAUSE,
-            lastPauseState,
-            lastPauseTime
-        )
-    )
+    if(pauseButtonPressed())
     {
-        Serial.println(
-            "PHYSICAL PAUSE PRESSED"
-        );
-
         sendPhysicalCommand(
             "PHYSICAL_PAUSE"
         );
     }
 
 
-    // ==================================================
+    // --------------------------------------------------------
     // WATER
-    // ==================================================
+    // --------------------------------------------------------
 
     if(
         buttonPressed(
@@ -281,19 +452,15 @@ void physicalButtonTask()
         )
     )
     {
-        Serial.println(
-            "PHYSICAL WATER PRESSED"
-        );
-
         sendPhysicalCommand(
             "PHYSICAL_WATER"
         );
     }
 
 
-    // ==================================================
+    // --------------------------------------------------------
     // SOAP
-    // ==================================================
+    // --------------------------------------------------------
 
     if(
         buttonPressed(
@@ -303,19 +470,15 @@ void physicalButtonTask()
         )
     )
     {
-        Serial.println(
-            "PHYSICAL SOAP PRESSED"
-        );
-
         sendPhysicalCommand(
             "PHYSICAL_SOAP"
         );
     }
 
 
-    // ==================================================
+    // --------------------------------------------------------
     // BLOWER
-    // ==================================================
+    // --------------------------------------------------------
 
     if(
         buttonPressed(
@@ -325,19 +488,15 @@ void physicalButtonTask()
         )
     )
     {
-        Serial.println(
-            "PHYSICAL BLOWER PRESSED"
-        );
-
         sendPhysicalCommand(
             "PHYSICAL_BLOWER"
         );
     }
 
 
-    // ==================================================
+    // --------------------------------------------------------
     // FAUCET
-    // ==================================================
+    // --------------------------------------------------------
 
     if(
         buttonPressed(
@@ -347,10 +506,6 @@ void physicalButtonTask()
         )
     )
     {
-        Serial.println(
-            "PHYSICAL FAUCET PRESSED"
-        );
-
         sendPhysicalCommand(
             "PHYSICAL_FAUCET"
         );
@@ -358,66 +513,25 @@ void physicalButtonTask()
 }
 
 
-// ======================================================
-// RECEIVE COMMANDS FROM LCD
-// ======================================================
+// ============================================================
+// PROCESS COMMAND RECEIVED FROM LCD
+// ============================================================
 
-void OnDataRecv(
-    const esp_now_recv_info_t *info,
-    const uint8_t *data,
-    int len
+void processUARTCommand(
+    const char *command
 )
 {
-    if(data == nullptr)
-    {
-        return;
-    }
-
-    if(
-        len < (int)sizeof(Message)
-    )
-    {
-        Serial.println(
-            "Invalid packet size"
-        );
-
-        return;
-    }
+    Serial.print("UART RX <- LCD: ");
+    Serial.println(command);
 
 
-    memset(
-        &incoming,
-        0,
-        sizeof(incoming)
-    );
-
-    memcpy(
-        &incoming,
-        data,
-        sizeof(incoming)
-    );
-
-    incoming.command[
-        sizeof(incoming.command) - 1
-    ] = '\0';
-
-
-    Serial.print(
-        "Received from LCD: "
-    );
-
-    Serial.println(
-        incoming.command
-    );
-
-
-    // ==================================================
+    // ========================================================
     // WATER
-    // ==================================================
+    // ========================================================
 
     if(
         strcmp(
-            incoming.command,
+            command,
             "WATER_START"
         ) == 0
     )
@@ -428,13 +542,17 @@ void OnDataRecv(
         );
 
         Serial.println(
-            "Water Relay ON"
+            "WATER RELAY ON"
+        );
+
+        sendFrame(
+            "WATER_ACK"
         );
     }
 
     else if(
         strcmp(
-            incoming.command,
+            command,
             "WATER_STOP"
         ) == 0
     )
@@ -445,18 +563,22 @@ void OnDataRecv(
         );
 
         Serial.println(
-            "Water Relay OFF"
+            "WATER RELAY OFF"
+        );
+
+        sendFrame(
+            "WATER_ACK"
         );
     }
 
 
-    // ==================================================
+    // ========================================================
     // SOAP
-    // ==================================================
+    // ========================================================
 
     else if(
         strcmp(
-            incoming.command,
+            command,
             "SOAP_START"
         ) == 0
     )
@@ -467,13 +589,17 @@ void OnDataRecv(
         );
 
         Serial.println(
-            "Soap Relay ON"
+            "SOAP RELAY ON"
+        );
+
+        sendFrame(
+            "SOAP_ACK"
         );
     }
 
     else if(
         strcmp(
-            incoming.command,
+            command,
             "SOAP_STOP"
         ) == 0
     )
@@ -484,18 +610,25 @@ void OnDataRecv(
         );
 
         Serial.println(
-            "Soap Relay OFF"
+            "SOAP RELAY OFF"
+        );
+
+        sendFrame(
+            "SOAP_ACK"
         );
     }
 
 
-    // ==================================================
+    // ========================================================
     // BLOWER
-    // ==================================================
+    // ========================================================
+    //
+    // BLOWER RELAY = GPIO27
+    // ========================================================
 
     else if(
         strcmp(
-            incoming.command,
+            command,
             "BLOWER_START"
         ) == 0
     )
@@ -506,13 +639,17 @@ void OnDataRecv(
         );
 
         Serial.println(
-            "Blower Relay ON"
+            "BLOWER RELAY ON - GPIO27"
+        );
+
+        sendFrame(
+            "BLOWER_ACK"
         );
     }
 
     else if(
         strcmp(
-            incoming.command,
+            command,
             "BLOWER_STOP"
         ) == 0
     )
@@ -523,18 +660,22 @@ void OnDataRecv(
         );
 
         Serial.println(
-            "Blower Relay OFF"
+            "BLOWER RELAY OFF - GPIO27"
+        );
+
+        sendFrame(
+            "BLOWER_ACK"
         );
     }
 
 
-    // ==================================================
+    // ========================================================
     // FAUCET
-    // ==================================================
+    // ========================================================
 
     else if(
         strcmp(
-            incoming.command,
+            command,
             "FAUCET_START"
         ) == 0
     )
@@ -545,13 +686,17 @@ void OnDataRecv(
         );
 
         Serial.println(
-            "Faucet Relay ON"
+            "FAUCET RELAY ON"
+        );
+
+        sendFrame(
+            "FAUCET_ACK"
         );
     }
 
     else if(
         strcmp(
-            incoming.command,
+            command,
             "FAUCET_STOP"
         ) == 0
     )
@@ -562,75 +707,389 @@ void OnDataRecv(
         );
 
         Serial.println(
-            "Faucet Relay OFF"
+            "FAUCET RELAY OFF"
+        );
+
+        sendFrame(
+            "FAUCET_ACK"
+        );
+    }
+
+
+    // ========================================================
+    // ALL STOP
+    // ========================================================
+
+    else if(
+        strcmp(
+            command,
+            "ALL_STOP"
+        ) == 0
+    )
+    {
+        digitalWrite(
+            RELAY_WATER,
+            HIGH
+        );
+
+        digitalWrite(
+            RELAY_SOAP,
+            HIGH
+        );
+
+        digitalWrite(
+            RELAY_BLOWER,
+            HIGH
+        );
+
+        digitalWrite(
+            RELAY_FAUCET,
+            HIGH
+        );
+
+        Serial.println(
+            "ALL RELAYS OFF"
+        );
+
+        sendFrame(
+            "ALL_STOP_ACK"
+        );
+    }
+
+
+    // ========================================================
+    // PING
+    // ========================================================
+
+    else if(
+        strcmp(
+            command,
+            "PING"
+        ) == 0
+    )
+    {
+        sendFrame(
+            "PONG"
+        );
+    }
+
+
+    // ========================================================
+    // UNKNOWN COMMAND
+    // ========================================================
+
+    else
+    {
+        Serial.print(
+            "UNKNOWN UART COMMAND: "
+        );
+
+        Serial.println(command);
+
+        sendFrame(
+            "UNKNOWN_COMMAND"
         );
     }
 }
 
 
-// ======================================================
-// SEND HEARTBEAT
-// ======================================================
-void sendHeartbeat()
+// ============================================================
+// RECEIVE UART DATA
+// ============================================================
+//
+// Expected:
+//
+//   <WATER_START>
+//   <WATER_STOP>
+//   <SOAP_START>
+//   <SOAP_STOP>
+//   <BLOWER_START>
+//   <BLOWER_STOP>
+//   <FAUCET_START>
+//   <FAUCET_STOP>
+//   <ALL_STOP>
+//   <PING>
+// ============================================================
+
+void processUARTReceive()
 {
-    Message heartbeat;
-
-    memset(
-        &heartbeat,
-        0,
-        sizeof(heartbeat)
-    );
-
-    strcpy(
-        heartbeat.command,
-        "ONLINE"
-    );
-
-    esp_err_t result = esp_now_send(
-        lcdMAC,
-        (uint8_t *)&heartbeat,
-        sizeof(heartbeat)
-    );
-
-    Serial.print("Heartbeat -> LCD: ");
-
-    if(result == ESP_OK)
+    while(
+        CarwashUART.available() > 0
+    )
     {
-        Serial.println("QUEUED");
-    }
-    else
-    {
-        Serial.print("ERROR ");
-        Serial.println(result);
+        const char c =
+            (char)CarwashUART.read();
+
+
+        // ----------------------------------------------------
+        // START FRAME
+        // ----------------------------------------------------
+
+        if(c == '<')
+        {
+            uartInFrame = true;
+
+            uartFrameLength = 0;
+
+            uartFrame[0] = '\0';
+
+            continue;
+        }
+
+
+        // ----------------------------------------------------
+        // END FRAME
+        // ----------------------------------------------------
+
+        if(c == '>')
+        {
+            if(uartInFrame)
+            {
+                uartFrame[
+                    uartFrameLength
+                ] = '\0';
+
+
+                if(
+                    uartFrameLength > 0
+                )
+                {
+                    processUARTCommand(
+                        uartFrame
+                    );
+                }
+            }
+
+            uartInFrame = false;
+
+            uartFrameLength = 0;
+
+            continue;
+        }
+
+
+        // ----------------------------------------------------
+        // STORE FRAME DATA
+        // ----------------------------------------------------
+
+        if(uartInFrame)
+        {
+            if(
+                c != '\n' &&
+                c != '\r'
+            )
+            {
+                if(
+                    uartFrameLength <
+                    sizeof(uartFrame) - 1
+                )
+                {
+                    uartFrame[
+                        uartFrameLength++
+                    ] = c;
+
+                    uartFrame[
+                        uartFrameLength
+                    ] = '\0';
+                }
+                else
+                {
+                    // Frame too long.
+                    // Discard it safely.
+
+                    uartInFrame = false;
+
+                    uartFrameLength = 0;
+                }
+            }
+        }
     }
 }
 
 
-// ======================================================
-// SETUP
-// ======================================================
+// ============================================================
+// HEARTBEAT
+// ============================================================
+//
+// Sends ONLINE to LCD every 5 seconds.
+// ============================================================
 
-void setup()
+void sendHeartbeat()
 {
-    Serial.begin(115200);
+    const unsigned long now =
+        millis();
 
-    delay(500);
+
+    if(
+        now - lastHeartbeat >=
+        HEARTBEAT_INTERVAL
+    )
+    {
+        lastHeartbeat = now;
+
+        sendFrame(
+            "ONLINE"
+        );
+    }
+}
+
+
+// ============================================================
+// START WIFI
+// ============================================================
+//
+// Wi-Fi is secondary.
+// The controller continues operating if Wi-Fi fails.
+// ============================================================
+
+void startWiFi()
+{
+    if(
+        WiFi.status() ==
+        WL_CONNECTED
+    )
+    {
+        return;
+    }
+
 
     Serial.println();
     Serial.println(
-        "=============================="
-    );
-    Serial.println(
-        "CARWASH CONTROLLER STARTING"
-    );
-    Serial.println(
-        "=============================="
+        "Starting secondary Wi-Fi..."
     );
 
 
-    // ==================================================
-    // RELAYS
-    // ==================================================
+    WiFi.mode(
+        WIFI_STA
+    );
+
+
+    WiFi.setSleep(
+        false
+    );
+
+
+    WiFi.begin(
+        CARWASH_WIFI_SSID,
+        CARWASH_WIFI_PASSWORD
+    );
+
+
+    lastWiFiAttempt =
+        millis();
+}
+
+
+// ============================================================
+// WIFI BACKGROUND TASK
+// ============================================================
+//
+// IMPORTANT:
+// This task never controls relays.
+//
+// UART + physical buttons continue operating
+// regardless of Wi-Fi state.
+// ============================================================
+
+void wifiTask()
+{
+    if(
+        WiFi.status() ==
+        WL_CONNECTED
+    )
+    {
+        return;
+    }
+
+
+    const unsigned long now =
+        millis();
+
+
+    if(
+        now - lastWiFiAttempt >=
+        WIFI_RETRY_INTERVAL
+    )
+    {
+        startWiFi();
+    }
+}
+
+
+// ============================================================
+// SETUP
+// ============================================================
+
+void setup()
+{
+    // --------------------------------------------------------
+    // SERIAL MONITOR
+    // --------------------------------------------------------
+
+    Serial.begin(
+        115200
+    );
+
+    delay(1000);
+
+
+    Serial.println();
+
+    Serial.println(
+        "========================================"
+    );
+
+    Serial.println(
+        "CARWASH CONTROLLER"
+    );
+
+    Serial.println(
+        "WIRED UART VERSION"
+    );
+
+    Serial.println(
+        "========================================"
+    );
+
+
+    // --------------------------------------------------------
+    // PIN MAP
+    // --------------------------------------------------------
+
+    Serial.println(
+        "RELAY WATER   = GPIO25"
+    );
+
+    Serial.println(
+        "RELAY SOAP    = GPIO26"
+    );
+
+    Serial.println(
+        "RELAY BLOWER  = GPIO27"
+    );
+
+    Serial.println(
+        "RELAY FAUCET  = GPIO33"
+    );
+
+
+    Serial.println(
+        "UART RX       = GPIO22"
+    );
+
+    Serial.println(
+        "UART TX       = GPIO23"
+    );
+
+
+    Serial.println(
+        "========================================"
+    );
+
+
+    // --------------------------------------------------------
+    // RELAY OUTPUTS
+    // --------------------------------------------------------
 
     pinMode(
         RELAY_WATER,
@@ -653,8 +1112,11 @@ void setup()
     );
 
 
-    // Active LOW
+    // --------------------------------------------------------
+    // ACTIVE-LOW RELAYS
+    //
     // HIGH = OFF
+    // --------------------------------------------------------
 
     digitalWrite(
         RELAY_WATER,
@@ -677,9 +1139,14 @@ void setup()
     );
 
 
-    // ==================================================
-    // BUTTONS
-    // ==================================================
+    Serial.println(
+        "All relays initialized OFF."
+    );
+
+
+    // --------------------------------------------------------
+    // BUTTON INPUTS
+    // --------------------------------------------------------
 
     pinMode(
         BTN_PAUSE,
@@ -707,211 +1174,187 @@ void setup()
     );
 
 
-    // ==================================================
-    // READ INITIAL STATES
-    // ==================================================
+    // --------------------------------------------------------
+    // READ INITIAL BUTTON STATES
+    // --------------------------------------------------------
 
     lastPauseState =
-        digitalRead(BTN_PAUSE);
+        digitalRead(
+            BTN_PAUSE
+        );
 
     lastWaterState =
-        digitalRead(BTN_WATER_START);
+        digitalRead(
+            BTN_WATER_START
+        );
 
     lastSoapState =
-        digitalRead(BTN_SOAP_START);
+        digitalRead(
+            BTN_SOAP_START
+        );
 
     lastBlowerState =
-        digitalRead(BTN_BLOWER_START);
+        digitalRead(
+            BTN_BLOWER_START
+        );
 
     lastFaucetState =
-        digitalRead(BTN_FAUCET_START);
-
-
-    // ==================================================
-    // WIFI
-    // ==================================================
-
-    WiFi.mode(WIFI_STA);
-
-    WiFi.disconnect();
-
-    delay(100);
-
-
-    // ==================================================
-    // FORCE ESP-NOW CHANNEL
-    // ==================================================
-
-    esp_wifi_set_channel(
-        ESPNOW_CHANNEL,
-        WIFI_SECOND_CHAN_NONE
-    );
-
-
-    Serial.print(
-        "Controller MAC: "
-    );
-
-    Serial.println(
-        WiFi.macAddress()
-    );
-
-    Serial.print(
-        "ESP-NOW Channel: "
-    );
-
-    Serial.println(
-        ESPNOW_CHANNEL
-    );
-
-
-    // ==================================================
-    // ESP-NOW
-    // ==================================================
-
-    if(
-        esp_now_init() != ESP_OK
-    )
-    {
-        Serial.println(
-            "ESP-NOW INIT FAILED"
+        digitalRead(
+            BTN_FAUCET_START
         );
 
-        return;
-    }
 
+    // --------------------------------------------------------
+    // UART
+    // --------------------------------------------------------
+    //
+    // LCD:
+    //   GPIO17 TX -> Controller GPIO22 RX
+    //   GPIO18 RX <- Controller GPIO23 TX
+    // --------------------------------------------------------
 
-    // ==================================================
-    // SEND CALLBACK
-    // ==================================================
-
-    esp_now_register_send_cb(
-        OnDataSent
+    CarwashUART.begin(
+        UART_BAUD,
+        SERIAL_8N1,
+        CONTROLLER_UART_RX,
+        CONTROLLER_UART_TX
     );
 
-
-    // ==================================================
-    // RECEIVE CALLBACK
-    // ==================================================
-
-    esp_now_register_recv_cb(
-        OnDataRecv
-    );
-
-
-    // ==================================================
-    // ADD LCD PEER
-    // ==================================================
-
-    if(
-        !esp_now_is_peer_exist(
-            lcdMAC
-        )
-    )
-    {
-        esp_now_peer_info_t peerInfo = {};
-
-        memcpy(
-            peerInfo.peer_addr,
-            lcdMAC,
-            6
-        );
-
-        peerInfo.channel =
-            ESPNOW_CHANNEL;
-
-        peerInfo.encrypt = false;
-
-        esp_err_t result =
-            esp_now_add_peer(
-                &peerInfo
-            );
-
-        if(result != ESP_OK)
-        {
-            Serial.print(
-                "LCD peer add failed: "
-            );
-
-            Serial.println(
-                result
-            );
-
-            return;
-        }
-
-        Serial.println(
-            "LCD peer added"
-        );
-    }
-
-
-    // ==================================================
-    // READY
-    // ==================================================
 
     Serial.println();
     Serial.println(
-        "=============================="
+        "UART initialized."
     );
+
+    Serial.println(
+        "Controller RX = GPIO22"
+    );
+
+    Serial.println(
+        "Controller TX = GPIO23"
+    );
+
+    Serial.println(
+        "Baud = 115200"
+    );
+
+
+    // --------------------------------------------------------
+    // INITIAL HEARTBEAT
+    // --------------------------------------------------------
+
+    delay(300);
+
+    sendFrame(
+        "ONLINE"
+    );
+
+    lastHeartbeat =
+        millis();
+
+
+    // --------------------------------------------------------
+    // WIFI
+    // --------------------------------------------------------
+    //
+    // Start Wi-Fi as a secondary background service.
+    //
+    // No relay depends on Wi-Fi.
+    // --------------------------------------------------------
+
+    WiFi.mode(
+        WIFI_STA
+    );
+
+    WiFi.setSleep(
+        false
+    );
+
+    lastWiFiAttempt =
+        millis();
+
+
+    // --------------------------------------------------------
+    // READY
+    // --------------------------------------------------------
+
+    Serial.println();
+
+    Serial.println(
+        "========================================"
+    );
+
     Serial.println(
         "CONTROLLER READY"
     );
+
     Serial.println(
-        "=============================="
+        "========================================"
     );
 
     Serial.println(
-        "Heartbeat: 1 second"
+        "LOCAL CONTROL : UART"
     );
 
     Serial.println(
-        "Buttons: NON-BLOCKING"
+        "UART          : PRIMARY"
     );
 
+    Serial.println(
+        "PHYSICAL BTNS : ACTIVE"
+    );
 
-    // ==================================================
-    // WAIT FOR LCD TO BE READY
-    // ==================================================
+    Serial.println(
+        "WIFI          : SECONDARY"
+    );
 
-    delay(500);
+    Serial.println(
+        "BLOWER RELAY  : GPIO27"
+    );
 
-    sendHeartbeat();
-
-    lastHeartbeat = millis();
+    Serial.println(
+        "========================================"
+    );
 }
 
 
-// ======================================================
-// LOOP
-// ======================================================
+// ============================================================
+// MAIN LOOP
+// ============================================================
 
 void loop()
 {
-    // ==================================================
+    // --------------------------------------------------------
+    // UART FIRST
+    // --------------------------------------------------------
+
+    processUARTReceive();
+
+
+    // --------------------------------------------------------
     // PHYSICAL BUTTONS
-    // ==================================================
+    // --------------------------------------------------------
 
     physicalButtonTask();
 
 
-    // ==================================================
+    // --------------------------------------------------------
     // HEARTBEAT
-    // ==================================================
+    // --------------------------------------------------------
 
-    unsigned long now = millis();
-
-    if(
-        now - lastHeartbeat >=
-        HEARTBEAT_INTERVAL
-    )
-    {
-        lastHeartbeat = now;
-
-        sendHeartbeat();
-    }
+    sendHeartbeat();
 
 
-    // Very short yield
-    delay(2);
+    // --------------------------------------------------------
+    // WIFI BACKGROUND
+    // --------------------------------------------------------
+
+    wifiTask();
+
+
+    // --------------------------------------------------------
+    // VERY SHORT COOPERATIVE DELAY
+    // --------------------------------------------------------
+
+    delay(1);
 }

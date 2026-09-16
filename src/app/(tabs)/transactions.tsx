@@ -1,21 +1,20 @@
-import React, { useEffect, useState } from 'react';
-import { supabase } from '@/lib/supabase';
+import React, { useEffect, useMemo, useState } from 'react';
 
-import {
-  StyleSheet,
-  Text,
-  View,
-  ScrollView,
-  Pressable,
-} from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-const PURPLE = '#5B00FF';
-const BLUE = '#6AA5D8';
-const CARD = '#E5E5E5';
-const GREEN = '#19C765';
-const ORANGE = '#F5A623';
+
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  Pressable,
+  useWindowDimensions,
+} from 'react-native';
+
+import { SafeAreaView } from 'react-native-safe-area-context';
+
+import { supabase } from '@/lib/supabase';
 
 type Transaction = {
   id: number;
@@ -27,626 +26,1038 @@ type Transaction = {
   created_at: string;
 };
 
-function formatDuration(duration: number | string) {
-  const totalSeconds = Number(duration);
-
-  if (!Number.isFinite(totalSeconds)) {
-    return '00:00';
-  }
-
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = Math.floor(totalSeconds % 60);
-
-  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
-}
-
-
 export default function TransactionsScreen() {
   const router = useRouter();
-  const [filter, setFilter] = useState('Today');
-const [transactions, setTransactions] = useState<any[]>([]);
-const [loading, setLoading] = useState(true);
-const [errorMessage, setErrorMessage] = useState('');
+  const { width } = useWindowDimensions();
 
-useEffect(() => {
-  fetchTransactions();
-}, []);
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [serverConnected, setServerConnected] = useState(false);
+  const [filter, setFilter] = useState('ALL');
 
-const fetchTransactions = async () => {
-  setLoading(true);
-  setErrorMessage('');
+  const isCompact = width < 850;
 
-  const { data, error } = await supabase
-    .from('transactions')
-    .select('*')
-    .order('created_at', { ascending: false });
+  useEffect(() => {
+    const fetchTransactions = async () => {
+      const { data, error } = await supabase
+        .from('transactions')
+        .select('*')
+        .order('created_at', { ascending: false });
 
-  if (error) {
-    console.error('Error loading transactions:', error);
-    setErrorMessage('Unable to load transactions.');
-    setTransactions([]);
-  } else {
-    setTransactions(data ?? []);
-  }
+      if (error) {
+        console.error('Transactions fetch error:', error);
+        setServerConnected(false);
+        setLoading(false);
+        return;
+      }
 
-  setLoading(false);
-};
+      setTransactions(data ?? []);
+      setServerConnected(true);
+      setLoading(false);
+    };
+
+    fetchTransactions();
+
+    const interval = setInterval(fetchTransactions, 5000);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  const filteredTransactions = useMemo(() => {
+    if (filter === 'ALL') return transactions;
+
+    return transactions.filter(
+      (transaction) =>
+        transaction.status?.toUpperCase() === filter
+    );
+  }, [transactions, filter]);
+
+  const totalRevenue = useMemo(
+    () =>
+      transactions
+        .filter(
+          (transaction) =>
+            transaction.status?.toUpperCase() ===
+            'COMPLETED'
+        )
+        .reduce(
+          (total, transaction) =>
+            total + Number(transaction.payment || 0),
+          0
+        ),
+    [transactions]
+  );
+
+  const completedCount = transactions.filter(
+    (transaction) =>
+      transaction.status?.toUpperCase() === 'COMPLETED'
+  ).length;
+
+  const pendingCount = transactions.filter(
+    (transaction) =>
+      transaction.status?.toUpperCase() === 'PENDING'
+  ).length;
+
+  const formatDate = (value: string) => {
+    const date = new Date(value);
+
+    return date.toLocaleDateString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    });
+  };
+
+  const formatTime = (value: string) => {
+    const date = new Date(value);
+
+    return date.toLocaleTimeString(undefined, {
+      hour: 'numeric',
+      minute: '2-digit',
+    });
+  };
+
+  const formatPayment = (value: number) =>
+    `₱${Number(value || 0).toFixed(2)}`;
+
+  const getServiceIcon = (
+    service: string
+  ): keyof typeof Ionicons.glyphMap => {
+    const value = service?.toLowerCase() ?? '';
+
+    if (value.includes('soap')) {
+      return 'flask-outline';
+    }
+
+    if (value.includes('blower')) {
+      return 'speedometer-outline';
+    }
+
+    if (value.includes('faucet')) {
+      return 'rainy-outline';
+    }
+
+    return 'water-outline';
+  };
+
+  const getStatusStyle = (status: string) => {
+    const value = status?.toUpperCase() ?? '';
+
+    if (value === 'COMPLETED' || value === 'SUCCESS') {
+      return {
+        backgroundColor: '#EAF9F2',
+        textColor: '#16865A',
+        icon: 'checkmark-circle-outline' as keyof typeof Ionicons.glyphMap,
+      };
+    }
+
+    if (value === 'PENDING') {
+      return {
+        backgroundColor: '#FFF7E6',
+        textColor: '#B77900',
+        icon: 'time-outline' as keyof typeof Ionicons.glyphMap,
+      };
+    }
+
+    if (value === 'CANCELLED' || value === 'FAILED') {
+      return {
+        backgroundColor: '#FDECEC',
+        textColor: '#C62E2E',
+        icon: 'close-circle-outline' as keyof typeof Ionicons.glyphMap,
+      };
+    }
+
+    return {
+      backgroundColor: '#F2F3F6',
+      textColor: '#777B87',
+      icon: 'ellipse-outline' as keyof typeof Ionicons.glyphMap,
+    };
+  };
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      <ScrollView
-        style={styles.container}
-        contentContainerStyle={styles.content}
-        showsVerticalScrollIndicator={false}
-      >
+      <View style={styles.container}>
         {/* HEADER */}
         <View style={styles.header}>
-          <View>
-            <Text style={styles.title}>TRANSACTIONS</Text>
-            <Text style={styles.subtitle}>
-              View all carwash sessions and payments.
-            </Text>
-          </View>
-
-          <View style={styles.headerRight}>
-            <View>
-              <Text style={styles.date}>Dec 30, 2026</Text>
-              <Text style={styles.time}>11:59 AM</Text>
+          <View style={styles.headerLeft}>
+            <View style={styles.headerIcon}>
+              <Ionicons
+                name="receipt-outline"
+                size={27}
+                color="#FFFFFF"
+              />
             </View>
 
-            <Pressable
-  onPress={() => router.push('/notifications')}
->
-  <Ionicons
-    name="notifications-outline"
-    size={30}
-    color="#FFFFFF"
-    style={styles.bell}
-  />
-</Pressable>
+            <View>
+              <Text style={styles.title}>
+                TRANSACTIONS
+              </Text>
+              <Text style={styles.subtitle}>
+                View and monitor carwash transactions
+              </Text>
+            </View>
           </View>
+
+          <Pressable
+            style={styles.headerButton}
+            onPress={() => router.push('/notifications')}
+          >
+            <Ionicons
+              name="notifications-outline"
+              size={23}
+              color="#FFFFFF"
+            />
+          </Pressable>
         </View>
 
-        {/* SUMMARY CARDS */}
-        <View style={styles.summaryRow}>
-          <SummaryCard
-            title="TODAY'S REVENUE"
-            icon="cash-outline"
-            value="₱ 50.00"
-            detail="vs yesterday  ↑ 12%"
-          />
+        <ScrollView
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={styles.scrollContent}
+        >
+          {/* PAGE INTRO */}
+          <View style={styles.pageIntro}>
+            <View>
+              <Text style={styles.pageTitle}>
+                Transaction History
+              </Text>
+              <Text style={styles.pageDescription}>
+                Review payments, services, and session
+                details.
+              </Text>
+            </View>
 
-          <SummaryCard
-            title="TODAY'S SESSIONS"
-            icon="person-outline"
-            value="2"
-            detail="vs yesterday  ↑"
-          />
+            <View style={styles.connectionBadge}>
+              <View
+                style={[
+                  styles.connectionDot,
+                  {
+                    backgroundColor: serverConnected
+                      ? '#20C77A'
+                      : '#F04444',
+                  },
+                ]}
+              />
+              <Text
+                style={[
+                  styles.connectionText,
+                  {
+                    color: serverConnected
+                      ? '#16865A'
+                      : '#C62E2E',
+                  },
+                ]}
+              >
+                {serverConnected
+                  ? 'Server Connected'
+                  : 'Server Offline'}
+              </Text>
+            </View>
+          </View>
 
-          <SummaryCard
-            title="AVERAGE PAYMENT"
-            icon="bar-chart-outline"
-            value="₱ 20.00"
-            detail="per session"
-          />
-        </View>
+          {/* SUMMARY */}
+          <View
+            style={[
+              styles.summaryRow,
+              isCompact && styles.summaryRowCompact,
+            ]}
+          >
+            <SummaryCard
+              icon="cash-outline"
+              label="TOTAL REVENUE"
+              value={formatPayment(totalRevenue)}
+              detail="Completed transactions"
+            />
 
-        {/* FILTERS */}
-        <View style={styles.filters}>
-          <FilterButton
-            label="Today"
-            icon="calendar-outline"
-            active={filter === 'Today'}
-            onPress={() => setFilter('Today')}
-          />
+            <SummaryCard
+              icon="receipt-outline"
+              label="TRANSACTIONS"
+              value={String(transactions.length)}
+              detail="All recorded sessions"
+            />
 
-          <FilterButton
-            label="This Week"
-            active={filter === 'This Week'}
-            onPress={() => setFilter('This Week')}
-          />
+            <SummaryCard
+              icon="checkmark-circle-outline"
+              label="COMPLETED"
+              value={String(completedCount)}
+              detail="Successful sessions"
+            />
 
-          <FilterButton
-            label="This Month"
-            active={filter === 'This Month'}
-            onPress={() => setFilter('This Month')}
-          />
-        </View>
+            <SummaryCard
+              icon="time-outline"
+              label="PENDING"
+              value={String(pendingCount)}
+              detail="Awaiting completion"
+            />
+          </View>
 
-        {/* TRANSACTIONS LIST */}
-        <View style={styles.transactionsContainer}>
-  {loading ? (
-    <Text style={styles.messageText}>
-      Loading transactions...
-    </Text>
-  ) : errorMessage ? (
-    <Text style={styles.errorText}>
-      {errorMessage}
-    </Text>
-  ) : transactions.length === 0 ? (
-    <Text style={styles.messageText}>
-      No transactions found.
-    </Text>
-  ) : (
-    
-    transactions.map((transaction) => (
-      
-      <TransactionCard
-        key={transaction.id}
-        customer={transaction.customer_name}
-        time={new Date(transaction.created_at).toLocaleTimeString([], {
-          hour: 'numeric',
-          minute: '2-digit',
-        })}
-        date={new Date(transaction.created_at).toLocaleDateString([], {
-          month: 'short',
-          day: 'numeric',
-          year: 'numeric',
-        })}
-        service={transaction.service}
-        payment={`₱ ${Number(transaction.payment).toFixed(2)}`}
-        duration={formatDuration(transaction.duration)}
-        status={transaction.status}
-        statusColor={
-          transaction.status.toUpperCase() === 'COMPLETED'
-            ? GREEN
-            : ORANGE
-        }
-      />
-    ))
-  )}
-</View>
-            </ScrollView>
+          {/* TABLE CARD */}
+          <View style={styles.tableCard}>
+            <View style={styles.tableHeader}>
+              <View>
+                <Text style={styles.sectionTitle}>
+                  ALL TRANSACTIONS
+                </Text>
+                <Text style={styles.sectionSubtitle}>
+                  {transactions.length} recorded transaction
+                  {transactions.length === 1 ? '' : 's'}
+                </Text>
+              </View>
 
-      
+              <View style={styles.filterRow}>
+                {['ALL', 'COMPLETED', 'PENDING'].map(
+                  (item) => (
+                    <Pressable
+                      key={item}
+                      style={[
+                        styles.filterButton,
+                        filter === item &&
+                          styles.filterButtonActive,
+                      ]}
+                      onPress={() => setFilter(item)}
+                    >
+                      <Text
+                        style={[
+                          styles.filterText,
+                          filter === item &&
+                            styles.filterTextActive,
+                        ]}
+                      >
+                        {item === 'ALL'
+                          ? 'All'
+                          : item === 'COMPLETED'
+                            ? 'Completed'
+                            : 'Pending'}
+                      </Text>
+                    </Pressable>
+                  )
+                )}
+              </View>
+            </View>
+
+            {loading ? (
+              <View style={styles.emptyState}>
+                <View style={styles.emptyIcon}>
+                  <Ionicons
+                    name="sync-outline"
+                    size={28}
+                    color="#4B00FF"
+                  />
+                </View>
+                <Text style={styles.emptyTitle}>
+                  Loading transactions
+                </Text>
+                <Text style={styles.emptyText}>
+                  Connecting to the transaction server...
+                </Text>
+              </View>
+            ) : filteredTransactions.length === 0 ? (
+              <View style={styles.emptyState}>
+                <View style={styles.emptyIcon}>
+                  <Ionicons
+                    name="receipt-outline"
+                    size={28}
+                    color="#4B00FF"
+                  />
+                </View>
+                <Text style={styles.emptyTitle}>
+                  No transactions found
+                </Text>
+                <Text style={styles.emptyText}>
+                  There are no transactions matching the
+                  selected filter.
+                </Text>
+              </View>
+            ) : (
+              <>
+                {/* DESKTOP TABLE HEADER */}
+                {!isCompact && (
+                  <View style={styles.columnHeader}>
+                    <Text
+                      style={[
+                        styles.columnText,
+                        styles.customerColumn,
+                      ]}
+                    >
+                      CUSTOMER
+                    </Text>
+                    <Text
+                      style={[
+                        styles.columnText,
+                        styles.serviceColumn,
+                      ]}
+                    >
+                      SERVICE
+                    </Text>
+                    <Text
+                      style={[
+                        styles.columnText,
+                        styles.paymentColumn,
+                      ]}
+                    >
+                      PAYMENT
+                    </Text>
+                    <Text
+                      style={[
+                        styles.columnText,
+                        styles.durationColumn,
+                      ]}
+                    >
+                      DURATION
+                    </Text>
+                    <Text
+                      style={[
+                        styles.columnText,
+                        styles.statusColumn,
+                      ]}
+                    >
+                      STATUS
+                    </Text>
+                    <Text
+                      style={[
+                        styles.columnText,
+                        styles.dateColumn,
+                      ]}
+                    >
+                      DATE
+                    </Text>
+                  </View>
+                )}
+
+                {filteredTransactions.map(
+                  (transaction) => {
+                    const statusStyle =
+                      getStatusStyle(
+                        transaction.status
+                      );
+
+                    return (
+                      <View
+                        key={transaction.id}
+                        style={[
+                          styles.transactionRow,
+                          isCompact &&
+                            styles.transactionRowCompact,
+                        ]}
+                      >
+                        <View
+                          style={[
+                            styles.customerCell,
+                            !isCompact &&
+                              styles.customerColumn,
+                          ]}
+                        >
+                          <View style={styles.customerAvatar}>
+                            <Ionicons
+                              name="person-outline"
+                              size={17}
+                              color="#4B00FF"
+                            />
+                          </View>
+
+                          <View style={styles.customerInfo}>
+                            <Text
+                              style={
+                                styles.customerName
+                              }
+                              numberOfLines={1}
+                            >
+                              {transaction.customer_name ||
+                                'Customer'}
+                            </Text>
+                            <Text
+                              style={styles.transactionId}
+                            >
+                              #{transaction.id}
+                            </Text>
+                          </View>
+                        </View>
+
+                        <View
+                          style={[
+                            styles.serviceCell,
+                            !isCompact &&
+                              styles.serviceColumn,
+                          ]}
+                        >
+                          <View
+                            style={styles.serviceIcon}
+                          >
+                            <Ionicons
+                              name={getServiceIcon(
+                                transaction.service
+                              )}
+                              size={18}
+                              color="#4B00FF"
+                            />
+                          </View>
+
+                          <Text
+                            style={styles.serviceText}
+                            numberOfLines={1}
+                          >
+                            {transaction.service ||
+                              'Service'}
+                          </Text>
+                        </View>
+
+                        <View
+                          style={[
+                            styles.paymentCell,
+                            !isCompact &&
+                              styles.paymentColumn,
+                          ]}
+                        >
+                          <Text
+                            style={styles.paymentText}
+                          >
+                            {formatPayment(
+                              transaction.payment
+                            )}
+                          </Text>
+                        </View>
+
+                        <View
+                          style={[
+                            styles.durationCell,
+                            !isCompact &&
+                              styles.durationColumn,
+                          ]}
+                        >
+                          <Ionicons
+                            name="time-outline"
+                            size={15}
+                            color="#8A8D97"
+                          />
+                          <Text
+                            style={styles.durationText}
+                          >
+                            {transaction.duration ?? 0}
+                            min
+                          </Text>
+                        </View>
+
+                        <View
+                          style={[
+                            styles.statusCell,
+                            !isCompact &&
+                              styles.statusColumn,
+                          ]}
+                        >
+                          <View
+                            style={[
+                              styles.statusBadge,
+                              {
+                                backgroundColor:
+                                  statusStyle.backgroundColor,
+                              },
+                            ]}
+                          >
+                            <Ionicons
+                              name={statusStyle.icon}
+                              size={13}
+                              color={
+                                statusStyle.textColor
+                              }
+                            />
+                            <Text
+                              style={[
+                                styles.statusText,
+                                {
+                                  color:
+                                    statusStyle.textColor,
+                                },
+                              ]}
+                            >
+                              {transaction.status ||
+                                'UNKNOWN'}
+                            </Text>
+                          </View>
+                        </View>
+
+                        <View
+                          style={[
+                            styles.dateCell,
+                            !isCompact &&
+                              styles.dateColumn,
+                          ]}
+                        >
+                          <Text
+                            style={styles.dateText}
+                          >
+                            {formatDate(
+                              transaction.created_at
+                            )}
+                          </Text>
+                          <Text
+                            style={styles.timeText}
+                          >
+                            {formatTime(
+                              transaction.created_at
+                            )}
+                          </Text>
+                        </View>
+                      </View>
+                    );
+                  }
+                )}
+              </>
+            )}
+          </View>
+        </ScrollView>
+      </View>
     </SafeAreaView>
   );
 }
 
-/* =========================
-   SUMMARY CARD
-========================= */
-
 function SummaryCard({
-  title,
   icon,
+  label,
   value,
   detail,
 }: {
-  title: string;
   icon: keyof typeof Ionicons.glyphMap;
+  label: string;
   value: string;
   detail: string;
 }) {
   return (
     <View style={styles.summaryCard}>
-      <Text style={styles.summaryTitle}>{title}</Text>
-
       <View style={styles.summaryIcon}>
-        <Ionicons name={icon} size={20} color="#FFFFFF" />
+        <Ionicons
+          name={icon}
+          size={21}
+          color="#4B00FF"
+        />
       </View>
 
-      <Text style={styles.summaryValue}>{value}</Text>
-      <Text style={styles.summaryDetail}>{detail}</Text>
-    </View>
-  );
-}
-
-/* =========================
-   FILTER BUTTON
-========================= */
-
-function FilterButton({
-  label,
-  icon,
-  active,
-  onPress,
-}: {
-  label: string;
-  icon?: keyof typeof Ionicons.glyphMap;
-  active: boolean;
-  onPress: () => void;
-}) {
-  return (
-    <Pressable
-      onPress={onPress}
-      style={[
-        styles.filterButton,
-        active && styles.filterButtonActive,
-      ]}
-    >
-      {icon && (
-        <Ionicons
-  name={icon}
-  size={20}
-  color={active ? '#FFFFFF' : PURPLE}
-/>
-      )}
-
-      <Text
-        style={[
-          styles.filterText,
-          active && styles.filterTextActive,
-        ]}
-      >
+      <Text style={styles.summaryLabel}>
         {label}
       </Text>
-    </Pressable>
-  );
-}
 
-/* =========================
-   TRANSACTION CARD
-========================= */
+      <Text style={styles.summaryValue}>
+        {value}
+      </Text>
 
-function TransactionCard({
-  customer,
-  time,
-  date,
-  service,
-  payment,
-  duration,
-  status,
-  statusColor,
-}: {
-  customer: string;
-  time: string;
-  date: string;
-  service: string;
-  payment: string;
-  duration: string;
-  status: string;
-  statusColor: string;
-}) {
-  return (
-    <View style={styles.transactionCard}>
-      {/* CUSTOMER */}
-      <View style={styles.customerSection}>
-        <View style={styles.customerIcon}>
-          <Ionicons
-            name="person-outline"
-            size={19}
-            color="#FFFFFF"
-          />
-        </View>
-
-        <View style={styles.customerInfo}>
-          <Text style={styles.customerName}>{customer}</Text>
-
-          <View style={styles.dateRow}>
-            <Ionicons
-              name="time-outline"
-              size={14}
-              color="#777777"
-            />
-            <Text style={styles.smallText}>
-              {time}  {date}
-            </Text>
-          </View>
-
-          <View style={styles.serviceTag}>
-            <Ionicons
-              name="water-outline"
-              size={14}
-              color="#72BCE0"
-            />
-            <Text style={styles.serviceText}>{service}</Text>
-          </View>
-        </View>
-      </View>
-
-      {/* PAYMENT */}
-      <View style={styles.infoColumn}>
-        <Text style={styles.infoLabel}>PAYMENT</Text>
-        <Text style={styles.payment}>{payment}</Text>
-        <Text style={styles.infoSub}>COIN</Text>
-      </View>
-
-      {/* DURATION */}
-      <View style={styles.infoColumn}>
-        <Text style={styles.infoLabel}>DURATION</Text>
-
-        <View style={styles.durationRow}>
-          <Ionicons
-            name="time-outline"
-            size={18}
-            color="#72BCE0"
-          />
-          <Text style={styles.duration}>{duration}</Text>
-        </View>
-
-        <View
-          style={[
-            styles.statusTag,
-            { backgroundColor: `${statusColor}25` },
-          ]}
-        >
-          <Text
-            style={[
-              styles.statusText,
-              { color: statusColor },
-            ]}
-          >
-            {status}
-          </Text>
-        </View>
-      </View>
+      <Text style={styles.summaryDetail}>
+        {detail}
+      </Text>
     </View>
   );
 }
-
-/* =========================
-   STYLES
-========================= */
 
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: BLUE,
+    backgroundColor: '#F6F7FB',
   },
 
   container: {
     flex: 1,
-    backgroundColor: BLUE,
+    backgroundColor: '#F6F7FB',
   },
 
- content: {
-  paddingHorizontal: 18,
-  paddingTop: 18,
-  paddingBottom: 120,
-},
-
-  /* HEADER */
-
   header: {
-    minHeight: 105,
+    minHeight: 88,
+    paddingHorizontal: 32,
+    paddingVertical: 16,
+    backgroundColor: '#4B00FF',
     flexDirection: 'row',
+    alignItems: 'center',
     justifyContent: 'space-between',
-    alignItems: 'flex-start',
+  },
+
+  headerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+  },
+
+  headerIcon: {
+    width: 50,
+    height: 50,
+    borderRadius: 15,
+    backgroundColor: 'rgba(255,255,255,0.14)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 
   title: {
-    marginTop: 4,
-    fontSize: 20,
-    fontWeight: '700',
     color: '#FFFFFF',
+    fontSize: 23,
+    fontWeight: '900',
+    letterSpacing: 1,
   },
 
   subtitle: {
-    marginTop: 2,
-    fontSize: 9,
-    color: '#FFFFFF',
-  },
-
-  headerRight: {
-    alignItems: 'flex-end',
-  },
-
-  date: {
-    color: '#FFFFFF',
+    marginTop: 3,
+    color: '#DDD7FF',
     fontSize: 12,
   },
 
-  time: {
-    color: '#FFFFFF',
+  headerButton: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    backgroundColor: 'rgba(255,255,255,0.14)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  scrollContent: {
+    padding: 28,
+    paddingBottom: 50,
+  },
+
+  pageIntro: {
+    marginBottom: 20,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 15,
+  },
+
+  pageTitle: {
+    color: '#17181D',
+    fontSize: 25,
+    fontWeight: '900',
+  },
+
+  pageDescription: {
+    marginTop: 4,
+    color: '#8A8D97',
     fontSize: 12,
-    textAlign: 'right',
   },
 
-  bell: {
-    marginTop: 12,
-    marginRight: 5,
+  connectionBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E8E9EF',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
   },
 
-  /* SUMMARY */
+  connectionDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+
+  connectionText: {
+    fontSize: 11,
+    fontWeight: '800',
+  },
 
   summaryRow: {
     flexDirection: 'row',
-    gap: 12,
+    gap: 15,
+  },
+
+  summaryRowCompact: {
+    flexDirection: 'column',
   },
 
   summaryCard: {
     flex: 1,
-    minHeight: 125,
-    backgroundColor: CARD,
-    borderRadius: 14,
+    minHeight: 145,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 17,
+    padding: 19,
+    borderWidth: 1,
+    borderColor: '#E8E9EF',
+  },
+
+  summaryIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 12,
+    backgroundColor: '#F5F2FF',
     alignItems: 'center',
-    paddingTop: 13,
+    justifyContent: 'center',
   },
 
-  summaryTitle: {
+  summaryLabel: {
+    marginTop: 12,
+    color: '#777B87',
     fontSize: 10,
-    color: '#333333',
-    textAlign: 'center',
-    fontWeight: '500',
+    fontWeight: '900',
+    letterSpacing: 0.6,
   },
-
-summaryIcon: {
-  width: 44,
-  height: 44,
-  borderRadius: 22,
-  backgroundColor: PURPLE,
-  alignItems: 'center',
-  justifyContent: 'center',
-  marginTop: 7,
-},
 
   summaryValue: {
-    marginTop: 7,
-    color: PURPLE,
-    fontSize: 16,
-    fontWeight: '600',
+    marginTop: 4,
+    color: '#17181D',
+    fontSize: 25,
+    fontWeight: '900',
   },
 
   summaryDetail: {
     marginTop: 3,
-    fontSize: 8,
-    color: '#777777',
+    color: '#999CA5',
+    fontSize: 10,
   },
 
-  /* FILTERS */
-
-  filters: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    gap: 8,
-    marginTop: 16,
-    marginBottom: 5,
+  tableCard: {
+    marginTop: 20,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#E8E9EF',
+    overflow: 'hidden',
   },
 
-  filterButton: {
-    height: 41,
-    minWidth: 115,
-    paddingHorizontal: 15,
-    borderRadius: 9,
-    backgroundColor: CARD,
+  tableHeader: {
+    minHeight: 82,
+    paddingHorizontal: 22,
+    paddingVertical: 17,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+    justifyContent: 'space-between',
+    gap: 15,
+  },
+
+  sectionTitle: {
+    color: '#17181D',
+    fontSize: 15,
+    fontWeight: '900',
+    letterSpacing: 0.7,
+  },
+
+  sectionSubtitle: {
+    marginTop: 4,
+    color: '#8A8D97',
+    fontSize: 11,
+  },
+
+  filterRow: {
+    flexDirection: 'row',
     gap: 7,
   },
 
+  filterButton: {
+    borderRadius: 9,
+    paddingHorizontal: 11,
+    paddingVertical: 7,
+    backgroundColor: '#F2F3F6',
+  },
+
   filterButtonActive: {
-    backgroundColor: PURPLE,
+    backgroundColor: '#4B00FF',
   },
 
   filterText: {
-    color: '#333333',
-    fontSize: 11,
+    color: '#777B87',
+    fontSize: 10,
+    fontWeight: '800',
   },
 
   filterTextActive: {
     color: '#FFFFFF',
   },
 
-  /* TRANSACTION AREA */
-
-transactionsContainer: {
-  backgroundColor: CARD,
-  borderRadius: 28,
-  minHeight: 590,
-  marginTop: 0,
-  paddingHorizontal: 16,
-  paddingTop: 16,
-  paddingBottom: 20,
-},
-
- transactionCard: {
-  minHeight: 96,
-  borderWidth: 1.5,
-  borderColor: '#B5B5B5',
-  borderRadius: 22,
-  paddingHorizontal: 10,
-  paddingVertical: 7,
-  flexDirection: 'row',
-  alignItems: 'center',
-  marginBottom: 12,
-},
-
-  /* CUSTOMER */
-
-  customerSection: {
-    flex: 1.65,
+  columnHeader: {
+    minHeight: 42,
+    paddingHorizontal: 20,
+    backgroundColor: '#F8F8FA',
+    borderTopWidth: 1,
+    borderBottomWidth: 1,
+    borderColor: '#ECECF1',
     flexDirection: 'row',
     alignItems: 'center',
   },
 
-  customerIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 22,
-    backgroundColor: PURPLE,
+  columnText: {
+    color: '#999CA5',
+    fontSize: 9,
+    fontWeight: '900',
+    letterSpacing: 0.6,
+  },
+
+  customerColumn: {
+    flex: 2,
+  },
+
+  serviceColumn: {
+    flex: 1.7,
+  },
+
+  paymentColumn: {
+    flex: 1,
+  },
+
+  durationColumn: {
+    flex: 1,
+  },
+
+  statusColumn: {
+    flex: 1.2,
+  },
+
+  dateColumn: {
+    flex: 1.3,
+  },
+
+  transactionRow: {
+    minHeight: 78,
+    paddingHorizontal: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F0F0F3',
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+
+  transactionRowCompact: {
+    paddingVertical: 15,
+    flexDirection: 'column',
+    alignItems: 'stretch',
+    gap: 11,
+  },
+
+  customerCell: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 9,
+    paddingRight: 10,
+  },
+
+  customerAvatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 11,
+    backgroundColor: '#F5F2FF',
     alignItems: 'center',
     justifyContent: 'center',
   },
 
   customerInfo: {
-    marginLeft: 10,
     flex: 1,
   },
 
   customerName: {
-    fontSize: 10,
-    fontWeight: '600',
-    color: '#222222',
+    color: '#292B32',
+    fontSize: 12,
+    fontWeight: '800',
   },
 
-  dateRow: {
+  transactionId: {
+    marginTop: 2,
+    color: '#A0A2AA',
+    fontSize: 9,
+  },
+
+  serviceCell: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 3,
-    marginTop: 5,
+    gap: 8,
+    paddingRight: 8,
   },
 
-  smallText: {
-    fontSize: 7,
-    color: '#777777',
-  },
-
-  serviceTag: {
-    flexDirection: 'row',
+  serviceIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 9,
+    backgroundColor: '#F5F2FF',
     alignItems: 'center',
-    alignSelf: 'flex-start',
-    backgroundColor: '#D3EEF7',
-    borderRadius: 5,
-    paddingHorizontal: 6,
-    paddingVertical: 4,
-    marginTop: 5,
-    gap: 3,
+    justifyContent: 'center',
   },
 
   serviceText: {
-    fontSize: 7,
-    color: '#65AFCF',
+    color: '#393B43',
+    fontSize: 11,
+    fontWeight: '700',
   },
 
-  /* PAYMENT */
-
-  infoColumn: {
-    flex: 0.9,
-    alignItems: 'flex-start',
+  paymentCell: {
+    paddingRight: 8,
   },
 
-  infoLabel: {
-    fontSize: 8,
-    color: '#333333',
-    marginBottom: 5,
-  },
-
-  payment: {
+  paymentText: {
+    color: '#17181D',
     fontSize: 12,
-    color: PURPLE,
-    fontWeight: '600',
+    fontWeight: '900',
   },
 
-  infoSub: {
-    fontSize: 7,
-    color: '#777777',
-    marginTop: 2,
-  },
-
-  /* DURATION */
-
-  durationRow: {
+  durationCell: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 3,
+    gap: 5,
   },
 
-  duration: {
+  durationText: {
+    color: '#656873',
     fontSize: 11,
-    color: '#72BCE0',
+    fontWeight: '700',
   },
 
-  statusTag: {
-    borderRadius: 5,
-    paddingHorizontal: 7,
-    paddingVertical: 4,
-    marginTop: 6,
+  statusCell: {
+    paddingRight: 8,
+  },
+
+  statusBadge: {
+    alignSelf: 'flex-start',
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
   },
 
   statusText: {
-    fontSize: 7,
-    fontWeight: '600',
+    fontSize: 9,
+    fontWeight: '900',
+  },
+
+  dateCell: {
+    justifyContent: 'center',
+  },
+
+  dateText: {
+    color: '#4D4F57',
+    fontSize: 10,
+    fontWeight: '700',
+  },
+
+  timeText: {
+    marginTop: 2,
+    color: '#999CA5',
+    fontSize: 9,
+  },
+
+  emptyState: {
+    minHeight: 300,
+    padding: 30,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderTopWidth: 1,
+    borderTopColor: '#ECECF1',
+  },
+
+  emptyIcon: {
+    width: 62,
+    height: 62,
+    borderRadius: 18,
+    backgroundColor: '#F5F2FF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  emptyTitle: {
+    marginTop: 14,
+    color: '#292B32',
+    fontSize: 16,
+    fontWeight: '900',
+  },
+
+  emptyText: {
+    maxWidth: 330,
+    marginTop: 5,
+    color: '#999CA5',
+    fontSize: 11,
+    textAlign: 'center',
+    lineHeight: 17,
   },
 });
